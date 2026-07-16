@@ -1,0 +1,72 @@
+# AdaptiveOptimizerAnalytical configuration for Wuji Glove (LEFT HAND).
+# Uses SDK-computed MediaPipe: wuji_sdk emits 21 keypoints directly,
+# so no client-side IK is required.
+# lp_alpha=0.2 keeps smoothing light because the SDK output is already filtered.
+
+optimizer:
+  type: "AdaptiveOptimizerAnalytical"
+
+retarget:
+  huber_delta: 2.0
+  huber_delta_dir: 0.5
+  norm_delta: 0.04
+  w_pos: 1.0
+  w_dir: 2.0
+  scaling: 1.0
+  w_full_hand: 1.0
+  thumb_skip_pip: true   # wuji_glove SDK reconstructs thumb MCP (kp[2]) inaccurately; drop it from FullHandVec loss
+  # Style penalty: discourage hyperextension and uncoupled PIP/DIP curl
+  w_hyper: 1.0           # PIP/DIP joints below soft_min are penalized quadratically
+  soft_min: 0.0          # joint angle threshold (rad); 0 = no negative angles allowed
+  w_couple: 0.1          # DIP pulled toward couple_ratio * PIP per finger
+  couple_ratio: 0.7      # biomechanical (DIP curls ~70% of PIP)
+  lp_alpha: 0.2
+
+  segment_scaling:
+    thumb:  [1.05, 1.05, 1.05]
+    index:  [1.1, 1.1, 1.1]
+    middle: [1.1, 1.1, 1.1]
+    ring:   [1.1, 1.1, 1.1]
+    pinky:  [1.25, 1.25, 1.25]
+
+  # segment_scaling:
+  #   thumb:  [0.99, 0.935, 0.935]
+  #   index:  [1.15, 1.15, 1.1]
+  #   middle: [1.1, 1.1, 1.05]
+  #   ring:   [1.1, 1.1, 1.05]
+  #   pinky:  [1.2, 1.2, 1.2]
+
+  # segment_scaling:
+  #   thumb:  [0.98, 1, 1]
+  #   index:  [1.1, 0.989, 1.03]
+  #   middle: [1.10, 0.96, 0.96]
+  #   ring:   [1.1, 0.97, 0.99]
+  #   pinky:  [1.105, 1.15, 1.15]
+
+  pinch_thresholds:
+    index:  { d1: 2.0, d2: 4.0 }
+    middle: { d1: 2.0, d2: 4.0 }
+    ring:   { d1: 2.0, d2: 4.0 }
+    pinky:  { d1: 2.0, d2: 4.0 }
+  mediapipe_rotation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+
+  # from gzt
+  # wrist_offset_cm: [-0.65, -0.68, 1.39]   # calibrated: four-finger kp[5:] bias
+  # thumb_offset_cm: [0.84, 1.84, 2.17]     # calibrated: thumb kp[1:5] bias
+
+  # from zjy
+  # wrist_offset_cm: [-0.65, -0.58, 1.37]
+  # thumb_offset_cm: [0.83, 1.75, -0.28]
+
+  # from hfy
+  # wrist_offset_cm: [-0.65, -1.11, 1.77]
+  # thumb_offset_cm: [0.85, -0.24, 2.02]
+
+  # from czr
+  wrist_offset_cm: [-0.65, -0.86, 1.07]
+  thumb_offset_cm: [0.84, -0.89, 0.39]
+wuji_glove:
+  device_name: "glove"

@@ -1,0 +1,18 @@
+web:
+  host: 0.0.0.0
+  https_port: 8443
+  static_root: quest3_web
+  cert_file: configs/certs/orin_gateway.crt
+  key_file: configs/certs/orin_gateway.key
+
+quest_ws:
+  listen_host: 0.0.0.0
+  listen_port: 9002
+
+control_pc:
+  url: ws://127.0.0.1:9001
+
+adb_reverse:
+  enabled: false
+  device_port: 8443
+  host_port: 8443

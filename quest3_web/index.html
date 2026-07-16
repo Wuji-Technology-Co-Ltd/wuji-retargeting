@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Quest3 WebXR Teleop</title>
+    <link rel="stylesheet" href="./styles/main.css">
+  </head>
+  <body>
+    <canvas id="xrCanvas" aria-hidden="true"></canvas>
+    <main>
+      <section class="toolbar">
+        <button id="connectButton" type="button">Connect</button>
+        <button id="enterXrButton" type="button" disabled>Enter XR</button>
+      </section>
+      <section class="status">
+        <div><span>WebSocket</span><strong id="wsStatus">disconnected</strong></div>
+        <div><span>XR Session</span><strong id="xrStatus">idle</strong></div>
+        <div><span>Left Hand</span><strong id="leftStatus">invalid</strong></div>
+        <div><span>Right Hand</span><strong id="rightStatus">invalid</strong></div>
+        <div><span>FPS</span><strong id="fpsStatus">0</strong></div>
+        <div><span>Control PC</span><strong id="controlStatus">unknown</strong></div>
+        <pre id="errorStatus"></pre>
+      </section>
+    </main>
+    <script type="module" src="./src/app.js?v=20260707-ar1"></script>
+  </body>
+</html>

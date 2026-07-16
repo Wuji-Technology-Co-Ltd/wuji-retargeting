@@ -1,0 +1,76 @@
+quest26_names:
+  - wrist
+  - forearm_stub
+  - thumb_metacarpal
+  - thumb_proximal
+  - thumb_distal
+  - thumb_tip
+  - index_metacarpal
+  - index_proximal
+  - index_intermediate
+  - index_distal
+  - index_tip
+  - middle_metacarpal
+  - middle_proximal
+  - middle_intermediate
+  - middle_distal
+  - middle_tip
+  - ring_metacarpal
+  - ring_proximal
+  - ring_intermediate
+  - ring_distal
+  - ring_tip
+  - pinky_metacarpal
+  - pinky_proximal
+  - pinky_intermediate
+  - pinky_distal
+  - pinky_tip
+mp21_names:
+  - wrist
+  - thumb_cmc
+  - thumb_mcp
+  - thumb_ip
+  - thumb_tip
+  - index_mcp
+  - index_pip
+  - index_dip
+  - index_tip
+  - middle_mcp
+  - middle_pip
+  - middle_dip
+  - middle_tip
+  - ring_mcp
+  - ring_pip
+  - ring_dip
+  - ring_tip
+  - pinky_mcp
+  - pinky_pip
+  - pinky_dip
+  - pinky_tip
+mapping:
+  wrist: wrist
+  thumb_cmc: thumb_metacarpal
+  thumb_mcp: thumb_proximal
+  thumb_ip: thumb_distal
+  thumb_tip: thumb_tip
+  index_mcp: index_proximal
+  index_pip: index_intermediate
+  index_dip: index_distal
+  index_tip: index_tip
+  middle_mcp: middle_proximal
+  middle_pip: middle_intermediate
+  middle_dip: middle_distal
+  middle_tip: middle_tip
+  ring_mcp: ring_proximal
+  ring_pip: ring_intermediate
+  ring_dip: ring_distal
+  ring_tip: ring_tip
+  pinky_mcp: pinky_proximal
+  pinky_pip: pinky_intermediate
+  pinky_dip: pinky_distal
+  pinky_tip: pinky_tip
+axis_transform:
+  - [1.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0]
+  - [0.0, 0.0, 1.0]
+scale: 1.0

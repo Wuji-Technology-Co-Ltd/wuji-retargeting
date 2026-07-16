@@ -6,11 +6,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-    "numpy>=1.21.0",
+    "numpy>=1.21.0,<2",
     "nlopt",
     "pin>=3.8.0",
     "pyyaml",
     "scipy>=1.11.0",
+    "websockets>=12.0",
     "wuji-sdk>=0.10.0",
 ]
 
@@ -34,7 +35,7 @@ tuning = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["wuji_retargeting*"]
+include = ["wuji_retargeting*", "stardust_wuji_quest3_pc_retargeting*"]
 
 [tool.setuptools.package-data]
 "wuji_retargeting" = [

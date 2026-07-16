@@ -41,36 +41,122 @@ import sys
 import time
 from pathlib import Path
 
-import mujoco
-import mujoco.viewer
 import numpy as np
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+EXAMPLE_DIR = Path(__file__).resolve().parent
+if str(EXAMPLE_DIR) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_DIR))
 
-from wuji_retargeting import Retargeter
-from input_devices.visionpro import VisionPro
-from input_devices.mediapipe_replay import MediaPipeReplay
-try:
-    from input_devices.video_mediapipe import VideoMediaPipe
-except ImportError:
-    VideoMediaPipe = None
-try:
-    from input_devices.realsense_mediapipe import RealsenseMediaPipe
-except ImportError:
-    RealsenseMediaPipe = None
-try:
-    from input_devices.zed_mediapipe import ZedMediaPipe
-except ImportError:
-    ZedMediaPipe = None
-try:
-    from input_devices.wuji_glove_device import WujiGloveDevice
-    WUJI_SDK_AVAILABLE = True
-except ImportError:
-    WujiGloveDevice = None
-    WUJI_SDK_AVAILABLE = False
+Quest3Device = None
+
+
+def _resolve_example_path(path: str) -> str:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((Path(__file__).parent / candidate).resolve())
+
+
+def create_input_device(
+    input_device_type: str,
+    hand_side: str,
+    mediapipe_replay_path: str = "",
+    visionpro_ip: str = "192.168.50.127",
+    playback_speed: float = 1.0,
+    playback_loop: bool = True,
+    video_path: str = "",
+    show_video: bool = False,
+    video_config: dict | None = None,
+    device_name: str = "glove",
+    glove_sn: str = "",
+    quest_host: str = "0.0.0.0",
+    quest_port: int = 9001,
+    quest_left_config: str = "../configs/quest3_web/webxr_hand_mapping_left.yaml",
+    quest_right_config: str = "../configs/quest3_web/webxr_hand_mapping_right.yaml",
+    quest_service_config: str = "",
+    grip_deadman_threshold: float = 0.5,
+):
+    if input_device_type == "visionpro":
+        from example.input_devices.visionpro import VisionPro
+
+        return VisionPro(ip=visionpro_ip)
+    if input_device_type == "mediapipe_replay":
+        from example.input_devices.mediapipe_replay import MediaPipeReplay
+
+        return MediaPipeReplay(
+            record_path=mediapipe_replay_path,
+            playback_speed=playback_speed,
+            loop=playback_loop,
+        )
+    if input_device_type == "video":
+        try:
+            from example.input_devices.video_mediapipe import VideoMediaPipe
+        except ImportError as exc:
+            raise ImportError("video mode requires mediapipe and opencv-python") from exc
+        return VideoMediaPipe(
+            video_path=video_path,
+            hand_side=hand_side,
+            playback_speed=playback_speed,
+            loop=playback_loop,
+            video_config=video_config,
+            show_video=show_video,
+        )
+    if input_device_type == "realsense":
+        try:
+            from example.input_devices.realsense_mediapipe import RealsenseMediaPipe
+        except ImportError as exc:
+            raise ImportError(
+                "realsense mode requires mediapipe, opencv-python, and pyrealsense2"
+            ) from exc
+        return RealsenseMediaPipe(
+            hand_side=hand_side,
+            video_config=video_config,
+            show_video=show_video,
+        )
+    if input_device_type == "zed":
+        try:
+            from example.input_devices.zed_mediapipe import ZedMediaPipe
+        except ImportError as exc:
+            raise ImportError("zed mode requires mediapipe, opencv-python, and pyzed") from exc
+        return ZedMediaPipe(
+            hand_side=hand_side,
+            video_config=video_config,
+            show_video=show_video,
+        )
+    if input_device_type == "wuji_glove":
+        try:
+            from example.input_devices.wuji_glove_device import WujiGloveDevice
+        except ImportError as exc:
+            raise ImportError(
+                "wuji_sdk is not installed. "
+                "Please install wuji_sdk to use --input wuji_glove."
+            ) from exc
+        return WujiGloveDevice(
+            hand_side=hand_side,
+            device_name=device_name,
+            sn=glove_sn or None,
+        )
+    if input_device_type == "quest3":
+        device_cls = Quest3Device
+        if device_cls is None:
+            from example.input_devices.quest3_device import Quest3Device as device_cls
+        if quest_service_config:
+            return device_cls.from_service_config(
+                _resolve_example_path(quest_service_config),
+                start_server=True,
+            )
+        return device_cls(
+            host=quest_host,
+            port=quest_port,
+            left_config=_resolve_example_path(quest_left_config),
+            right_config=_resolve_example_path(quest_right_config),
+            grip_deadman_threshold=grip_deadman_threshold,
+        )
+    raise ValueError(f"Unknown input device type: {input_device_type}")
 
 
 def run_tuning_mode(
@@ -137,6 +223,13 @@ def run_teleop(
     show_video: bool = False,
     device_name: str = "glove",
     glove_sn: str = "",
+    quest_host: str = "0.0.0.0",
+    quest_port: int = 9001,
+    quest_left_config: str = "../configs/quest3/quest26_to_mp21_left.yaml",
+    quest_right_config: str = "../configs/quest3/quest26_to_mp21_right.yaml",
+    quest_service_config: str = "",
+    grip_deadman_threshold: float = 0.5,
+    require_deadman: bool = False,
 ):
     """Run teleoperation with MuJoCo simulation.
 
@@ -156,11 +249,14 @@ def run_teleop(
     """
     hand_side = hand_side.lower()
     assert hand_side in {"right", "left"}, "hand_side must be 'right' or 'left'"
+    import mujoco
+    import mujoco.viewer
+    from wuji_retargeting import Retargeter
 
     # Load MuJoCo model
     mjcf_path = (
         Path(__file__).resolve().parents[1]
-        / "wuji_retargeting" / "wuji-description" / "hand" / "body" / "mjcf" / f"{hand_side}.xml"
+        / "wuji_retargeting" / "wuji_hand_description" / "mjcf" / f"{hand_side}.xml"
     )
     if not mjcf_path.exists():
         raise FileNotFoundError(f"MuJoCo model file not found: {mjcf_path}")
@@ -193,61 +289,30 @@ def run_teleop(
         full_config = yaml.safe_load(f)
     video_config = full_config.get("video_input", {})
 
-    def create_wuji_glove_device():
-        if not WUJI_SDK_AVAILABLE:
-            raise ImportError(
-                "wuji_sdk is not installed. "
-                "Please install wuji_sdk to use --input wuji_glove."
-            )
-        return WujiGloveDevice(
-            hand_side=hand_side,
-            device_name=device_name,
-            sn=glove_sn or None,
-        )
-
-    # Initialize input device
-    device_map = {
-        "visionpro": lambda: VisionPro(ip=visionpro_ip),
-        "mediapipe_replay": lambda: MediaPipeReplay(
-            record_path=mediapipe_replay_path,
-            playback_speed=playback_speed,
-            loop=playback_loop,
-        ),
-        "video": lambda: VideoMediaPipe(
-            video_path=video_path,
-            hand_side=hand_side,
-            playback_speed=playback_speed,
-            loop=playback_loop,
-            video_config=video_config,
-            show_video=show_video,
-        ),
-        "realsense": lambda: RealsenseMediaPipe(
-            hand_side=hand_side,
-            video_config=video_config,
-            show_video=show_video,
-        ),
-        "zed": lambda: ZedMediaPipe(
-            hand_side=hand_side,
-            video_config=video_config,
-            show_video=show_video,
-        ),
-        "wuji_glove": create_wuji_glove_device,
-    }
-    if input_device_type not in device_map:
-        raise ValueError(f"Unknown input device type: {input_device_type}")
-
     if input_device_type == "mediapipe_replay" and not mediapipe_replay_path:
         raise ValueError("mediapipe_replay_path is required for mediapipe_replay mode")
     if input_device_type == "video" and not video_path:
         raise ValueError("video_path is required for video mode")
-    if input_device_type == "video" and VideoMediaPipe is None:
-        raise ImportError("video mode requires mediapipe and opencv-python")
-    if input_device_type == "realsense" and RealsenseMediaPipe is None:
-        raise ImportError("realsense mode requires mediapipe, opencv-python, and pyrealsense2")
-    if input_device_type == "zed" and ZedMediaPipe is None:
-        raise ImportError("zed mode requires mediapipe, opencv-python, and pyzed")
 
-    input_device = device_map[input_device_type]()
+    input_device = create_input_device(
+        input_device_type=input_device_type,
+        hand_side=hand_side,
+        mediapipe_replay_path=mediapipe_replay_path,
+        visionpro_ip=visionpro_ip,
+        playback_speed=playback_speed,
+        playback_loop=playback_loop,
+        video_path=video_path,
+        show_video=show_video,
+        video_config=video_config,
+        device_name=device_name,
+        glove_sn=glove_sn,
+        quest_host=quest_host,
+        quest_port=quest_port,
+        quest_left_config=quest_left_config,
+        quest_right_config=quest_right_config,
+        quest_service_config=quest_service_config,
+        grip_deadman_threshold=grip_deadman_threshold,
+    )
 
     # Initialize retargeter
     retargeter = Retargeter.from_yaml(str(config_file), hand_side)
@@ -276,6 +341,12 @@ def run_teleop(
             # Get finger data
             fingers_data = input_device.get_fingers_data()
             fingers_pose = fingers_data[f"{hand_side}_fingers"]  # (21, 3)
+            controller_state = getattr(input_device, "get_controller_state", lambda: None)()
+            deadman = True if controller_state is None else controller_state.deadman
+            frame_age = getattr(input_device, "get_frame_age_sec", lambda: None)()
+            if require_deadman and not deadman:
+                time.sleep(0.01)
+                continue
 
             # Skip until the first valid frame arrives from the input device.
             if fingers_pose is None or np.allclose(fingers_pose, 0):
@@ -306,7 +377,7 @@ def run_teleop(
             if frame_count % 100 == 0:
                 elapsed = time.time() - fps_start_time
                 fps = frame_count / elapsed
-                print(f"FPS: {fps:.1f}")
+                print(f"FPS: {fps:.1f} hand={hand_side} deadman={deadman} age={frame_age}")
 
             # Set control signals
             if len(qpos) == model.nu:
@@ -374,7 +445,7 @@ Examples:
 
     # Input device options
     parser.add_argument('--input', type=str, default=None,
-                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove'],
+                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove', 'quest3'],
                         help='Input device type')
 
     # Shortcut options
@@ -414,6 +485,22 @@ Examples:
                         help='wuji_sdk device name for Wuji Glove (default: glove)')
     parser.add_argument('--glove-sn', type=str, default='',
                         help='Wuji Glove serial number (required when multiple Wuji devices online)')
+    parser.add_argument('--quest-host', type=str, default='0.0.0.0',
+                        help='Quest3 WebSocket listen host (default: 0.0.0.0)')
+    parser.add_argument('--quest-port', type=int, default=9001,
+                        help='Quest3 WebSocket listen port (default: 9001)')
+    parser.add_argument('--quest-left-config', type=str,
+                        default='../configs/quest3_web/webxr_hand_mapping_left.yaml',
+                        help='Quest3 left WebXR-to-MP21 config')
+    parser.add_argument('--quest-right-config', type=str,
+                        default='../configs/quest3_web/webxr_hand_mapping_right.yaml',
+                        help='Quest3 right WebXR-to-MP21 config')
+    parser.add_argument('--quest-service-config', type=str, default='',
+                        help='Quest3 Control PC service config YAML')
+    parser.add_argument('--grip-deadman-threshold', type=float, default=0.5,
+                        help='Quest3 global grip deadman threshold (default: 0.5)')
+    parser.add_argument('--require-deadman', action='store_true',
+                        help='Require Quest3 grip deadman before retargeting in sim')
 
     args = parser.parse_args()
 
@@ -444,6 +531,8 @@ Examples:
             args.config = 'config/adaptive_analytical_video.yaml'
         elif input_device_type == "wuji_glove":
             args.config = f'config/adaptive_analytical_wuji_glove_{args.hand}.yaml'
+        elif input_device_type == "quest3":
+            args.config = f'../configs/retargeting/adaptive_analytical_quest3_{args.hand}.yaml'
 
     # Validate paths
     if input_device_type == "mediapipe_replay" and not mediapipe_replay_path:
@@ -484,6 +573,13 @@ Examples:
         show_video=args.show_video,
         device_name=args.device_name,
         glove_sn=args.glove_sn,
+        quest_host=args.quest_host,
+        quest_port=args.quest_port,
+        quest_left_config=args.quest_left_config,
+        quest_right_config=args.quest_right_config,
+        quest_service_config=args.quest_service_config,
+        grip_deadman_threshold=args.grip_deadman_threshold,
+        require_deadman=args.require_deadman,
     )
 
     # Save recording if enabled

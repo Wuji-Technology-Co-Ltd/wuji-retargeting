@@ -1,0 +1,66 @@
+control_rate_hz: 100.0
+control_way: filter
+use_wbc: false
+add_default_torso: false
+
+whole_body:
+  enabled: false
+  allow_torso: false
+  allow_chassis: false
+  allow_head: false
+
+mapping:
+  mode: relative
+  position_scale_xyz: [0.3, 0.3, 0.3]
+  enable_orientation: false
+  rotation_scale: 0.5
+  robot_from_vr_axes:
+    - [0.0, 0.0, -1.0]
+    - [-1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+
+absolute_session_calibration:
+  countdown_sec: 3.0
+  sample_duration_sec: 1.5
+  minimum_valid_samples: 60
+  max_head_position_std_m: 0.010
+  max_hand_position_std_m: 0.015
+  max_head_yaw_std_rad: 0.050
+  max_hand_rotation_std_rad: 0.090
+  max_robot_position_std_m: 0.005
+  max_robot_rotation_std_rad: 0.030
+  max_robot_desired_current_error_m: 0.020
+  invalidate_on_session_change: true
+  invalidate_on_reference_space_change: true
+  require_reference_space_revision: true
+  invalidate_on_recenter: true
+  allow_restore_from_report: false
+
+filter:
+  type: low_pass
+  position_alpha: 0.25
+  orientation_alpha: 0.25
+
+safety:
+  fresh_timeout_sec: 0.05
+  disable_timeout_sec: 0.10
+  max_linear_speed_mps: 0.10
+  max_angular_speed_rad_s: 0.50
+  max_input_position_jump_m: 0.10
+  max_input_rotation_jump_rad: 0.80
+  mode_switch_max_position_jump_m: 0.05
+  mode_switch_max_rotation_jump_rad: 0.35
+  minimum_dt_sec: 0.002
+  maximum_dt_sec: 0.050
+  sdk_block_fault_sec: 0.050
+  consecutive_deadline_fault_count: 3
+
+arms:
+  left:
+    enabled: true
+    workspace_xyz_min: [0.25, 0.10, 0.75]
+    workspace_xyz_max: [0.65, 0.65, 1.35]
+  right:
+    enabled: true
+    workspace_xyz_min: [0.25, -0.65, 0.75]
+    workspace_xyz_max: [0.65, -0.10, 1.35]

@@ -1,0 +1,46 @@
+quest_host: 0.0.0.0
+quest_port: 9001
+quest_left_config: ../quest3/quest26_to_mp21_left.yaml
+quest_right_config: ../quest3/quest26_to_mp21_right.yaml
+grip_deadman_threshold: 0.5
+stale_timeout_sec: 0.2
+
+quest_web:
+  listen_host: 0.0.0.0
+  listen_port: 9001
+  stale_timeout_sec: 0.2
+  require_xr_session: true
+
+state:
+  start_in: IDLE
+  require_deadman: true
+  control_source: pc_keyboard
+
+hands:
+  left:
+    enabled: true
+    hand_name: left_hand
+    retarget_config: configs/retargeting/adaptive_analytical_quest3_left.yaml
+    mapping_config: configs/quest3_web/webxr_hand_mapping_left.yaml
+    safety_config: configs/safety/wh110_left.yaml
+  right:
+    enabled: true
+    hand_name: right_hand
+    retarget_config: configs/retargeting/adaptive_analytical_quest3_right.yaml
+    mapping_config: configs/quest3_web/webxr_hand_mapping_right.yaml
+    safety_config: configs/safety/wh110_right.yaml
+
+arms:
+  enabled: true
+  sdk_root: /home/zxc/cenyj/astribot_sdk/astribot_sdk_ros2-master
+  control_rate_hz: 100.0
+  position_scale: 1.0
+  rotation_scale: 1.0
+  workspace_config: ../arm/s1_quest3_default.yaml
+
+hardware:
+  enable_real_hand: false
+  enable_real_arm: false
+
+control_panel:
+  pause_on_close: true

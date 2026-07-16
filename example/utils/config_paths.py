@@ -21,7 +21,7 @@ def resolve_mujoco_model_dir(config_path: Path) -> Optional[str]:
         return None
     mjcf_abs = (config_path.parent / mjcf_rel).resolve()
     # mjcf_abs = .../<model_dir>/mjcf/<hand>.xml
-    # parents[1] = <model_dir> (e.g. wuji-description/hand/body/)
+    # parents[1] = <model_dir> (e.g. wuji_hand_description/)
     if len(mjcf_abs.parents) <= 1:
         raise ValueError(
             "optimizer.mjcf_path must resolve to "

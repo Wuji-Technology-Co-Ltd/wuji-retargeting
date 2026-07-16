@@ -1,0 +1,6 @@
+fresh_timeout_sec: 0.2
+disable_timeout_sec: 1.0
+hand:
+  max_delta: 0.35
+arm:
+  max_position_delta: 0.03

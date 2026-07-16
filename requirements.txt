@@ -1,4 +1,4 @@
-numpy>=1.21.0
+numpy>=1.21.0,<2
 wujihandpy
 avp_stream
 mujoco
@@ -9,3 +9,4 @@ scipy>=1.11.0
 mediapipe
 opencv-python
 wuji-sdk>=0.10.0
+websockets>=12.0

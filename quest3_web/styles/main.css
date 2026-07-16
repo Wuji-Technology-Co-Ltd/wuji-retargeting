@@ -1,0 +1,61 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, sans-serif;
+  background: #101418;
+  color: #eef3f6;
+}
+
+body {
+  margin: 0;
+}
+
+#xrCanvas {
+  position: fixed;
+  inset: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+main {
+  width: min(720px, calc(100vw - 32px));
+  margin: 32px auto;
+}
+
+.toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+button {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid #5e6a72;
+  border-radius: 6px;
+  background: #26323a;
+  color: inherit;
+  font-weight: 700;
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+.status {
+  display: grid;
+  gap: 10px;
+}
+
+.status div {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid #26323a;
+  padding: 8px 0;
+}
+
+pre {
+  white-space: pre-wrap;
+  color: #ffb4a8;
+}
