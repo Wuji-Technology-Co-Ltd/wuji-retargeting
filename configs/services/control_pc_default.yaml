@@ -20,15 +20,15 @@ hands:
   left:
     enabled: true
     hand_name: left_hand
-    retarget_config: configs/retargeting/adaptive_analytical_quest3_left.yaml
-    mapping_config: configs/quest3_web/webxr_hand_mapping_left.yaml
-    safety_config: configs/safety/wh110_left.yaml
+    retarget_config: ../retargeting/adaptive_analytical_quest3_left.yaml
+    mapping_config: ../quest3_web/webxr_hand_mapping_left.yaml
+    safety_config: ../safety/wh110_left.yaml
   right:
     enabled: true
     hand_name: right_hand
-    retarget_config: configs/retargeting/adaptive_analytical_quest3_right.yaml
-    mapping_config: configs/quest3_web/webxr_hand_mapping_right.yaml
-    safety_config: configs/safety/wh110_right.yaml
+    retarget_config: ../retargeting/adaptive_analytical_quest3_right.yaml
+    mapping_config: ../quest3_web/webxr_hand_mapping_right.yaml
+    safety_config: ../safety/wh110_right.yaml
 
 arms:
   enabled: true

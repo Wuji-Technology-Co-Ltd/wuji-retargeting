@@ -6,14 +6,22 @@ import numpy as np
 class RetargetPipeline:
     """Optional Wuji Retargeter wrapper with a deterministic dry-run fallback."""
 
-    def __init__(self, config_path: str | None = None, dry_run: bool = True):
+    def __init__(
+        self,
+        config_path: str | None = None,
+        hand_side: str | None = None,
+        dry_run: bool = True,
+    ):
+        if hand_side is not None and hand_side not in {"left", "right"}:
+            raise ValueError("hand_side must be left or right")
         self.config_path = config_path
+        self.hand_side = hand_side
         self.dry_run = dry_run
         self._retargeter = None
         if not dry_run and config_path:
             from wuji_retargeting import Retargeter
 
-            self._retargeter = Retargeter.from_yaml(config_path)
+            self._retargeter = Retargeter.from_yaml(config_path, hand_side)
 
     def retarget(self, mp21_points) -> np.ndarray:
         points = np.asarray(mp21_points, dtype=float)

@@ -26,6 +26,11 @@ from stardust_wuji_quest3_pc_retargeting.conversion.pose_math import (
     yaw_from_quat_y_up,
 )
 from stardust_wuji_quest3_pc_retargeting.hand_control.retarget_pipeline import RetargetPipeline
+from stardust_wuji_quest3_pc_retargeting.hand_control.command_bridge import (
+    DryRunHandCommandSink,
+    HandCommandSink,
+)
+from stardust_wuji_quest3_pc_retargeting.hand_control.control_loop import HandControlLoop
 from stardust_wuji_quest3_pc_retargeting.protocol.validation import validate_tracking_frame
 from stardust_wuji_quest3_pc_retargeting.runtime.arm_control_loop import ArmControlLoop, ArmFrameProcessor, LoopState, PauseControl
 from stardust_wuji_quest3_pc_retargeting.runtime.control_commands import CommandResult, ControlCommand, ControlCommandQueue
@@ -123,6 +128,15 @@ class SupervisorStatus:
     sdk_call_interval_p95_ms: float
     sdk_call_interval_max_ms: float
     sdk_last_call_interval_ms: float
+    hand_pipeline_enabled: bool
+    hand_retarget_real: bool
+    hand_command_sink: str
+    hand_output_frames: int
+    hand_output_last_seq: int | None
+    hand_command_enabled: dict[str, bool]
+    hand_safety_state: dict[str, str]
+    hand_output_last_error: str
+    hand_process_p95_ms: float
 
 
 class ControlPCSupervisor:
@@ -138,6 +152,11 @@ class ControlPCSupervisor:
         high_control_rights: bool = False,
         allow_orientation_control: bool = False,
         allow_real_absolute: bool = False,
+        enable_hand_pipeline: bool = False,
+        hand_config: dict[str, Any] | None = None,
+        hand_sink: HandCommandSink | None = None,
+        hand_retarget_real: bool = False,
+        hand_control_rate_hz: float = 120.0,
     ) -> None:
         if arm not in {"left", "right", "both"}:
             raise ValueError("arm must be left, right, or both")
@@ -322,9 +341,51 @@ class ControlPCSupervisor:
             consecutive_deadline_fault_count=int(safety.get("consecutive_deadline_fault_count", 3)),
             command_pump=self._pump_commands,
         )
+        self.hand_pipeline_enabled = bool(enable_hand_pipeline)
+        self.hand_retarget_real = bool(hand_retarget_real)
+        self.hand_loop: HandControlLoop | None = None
+        if self.hand_pipeline_enabled:
+            configured_hands = dict(hand_config or {})
+            if set(configured_hands) < {"left", "right"}:
+                raise ValueError("formal hand pipeline requires left and right hand configuration")
+            converters = {}
+            retargeters = {}
+            hand_filters = {}
+            for side in ("left", "right"):
+                entry = dict(configured_hands[side])
+                if not bool(entry.get("enabled", True)):
+                    raise ValueError(f"formal hand pipeline requires {side} hand enabled")
+                mapping_path = entry.get("mapping_config")
+                retarget_path = entry.get("retarget_config")
+                safety_path = entry.get("safety_config")
+                if not mapping_path or not Path(mapping_path).is_file():
+                    raise FileNotFoundError(f"{side} hand mapping config not found: {mapping_path}")
+                if not retarget_path or not Path(retarget_path).is_file():
+                    raise FileNotFoundError(f"{side} hand retarget config not found: {retarget_path}")
+                if not safety_path or not Path(safety_path).is_file():
+                    raise FileNotFoundError(f"{side} hand safety config not found: {safety_path}")
+                converters[side] = WebXRToMP21Converter.from_yaml(mapping_path)
+                retargeters[side] = RetargetPipeline(
+                    config_path=str(retarget_path),
+                    hand_side=side,
+                    dry_run=not self.hand_retarget_real,
+                )
+                hand_filters[side] = HandSafetyFilter.from_yaml(safety_path)
+            self.hand_loop = HandControlLoop(
+                tracking_buffer=self.tracking_buffer,
+                converters=converters,
+                retargeters=retargeters,
+                filters=hand_filters,
+                sink=hand_sink or DryRunHandCommandSink(),
+                running_provider=self._hands_running,
+                state_provider=lambda: self.state_machine.state.value,
+                poll_rate_hz=float(hand_control_rate_hz),
+            )
 
     def start(self) -> None:
         self.loop.start()
+        if self.hand_loop is not None:
+            self.hand_loop.start()
 
     def wait_until_adapter_ready(self, timeout_sec: float = 20.0) -> None:
         deadline = monotonic() + float(timeout_sec)
@@ -337,6 +398,8 @@ class ControlPCSupervisor:
         raise RuntimeError("timed out waiting for Astribot adapter initialization")
 
     def close(self) -> None:
+        if self.hand_loop is not None:
+            self.hand_loop.stop()
         self.loop.stop()
 
     def ingest_payload(self, payload: dict[str, Any], receive_time_ns: int | None = None):
@@ -388,6 +451,20 @@ class ControlPCSupervisor:
             teleop_state = TeleopState.FAULT.value
         sdk_ms = np.asarray(self.loop.stats.sdk_call_time_ns, dtype=float) / 1e6
         sdk_interval_ms = np.asarray(self.loop.stats.sdk_call_interval_ns, dtype=float) / 1e6
+        hand_status = (
+            {
+                "enabled": False,
+                "sink": "disabled",
+                "published_frames": 0,
+                "last_seq": None,
+                "command_enabled": {"left": False, "right": False},
+                "safety_state": {"left": "DISABLED", "right": "DISABLED"},
+                "last_error": "",
+                "process_p95_ms": 0.0,
+            }
+            if self.hand_loop is None
+            else self.hand_loop.status()
+        )
         engage_hold_remaining = 0.0
         engage_soft_start_remaining = 0.0
         if self._engage_state == "SOFT_START" and self._engage_soft_start_started_ns is not None:
@@ -506,6 +583,15 @@ class ControlPCSupervisor:
             sdk_last_call_interval_ms=(
                 0.0 if sdk_interval_ms.size == 0 else float(sdk_interval_ms[-1])
             ),
+            hand_pipeline_enabled=bool(hand_status["enabled"]),
+            hand_retarget_real=self.hand_retarget_real,
+            hand_command_sink=str(hand_status["sink"]),
+            hand_output_frames=int(hand_status["published_frames"]),
+            hand_output_last_seq=hand_status["last_seq"],
+            hand_command_enabled=dict(hand_status["command_enabled"]),
+            hand_safety_state=dict(hand_status["safety_state"]),
+            hand_output_last_error=str(hand_status["last_error"]),
+            hand_process_p95_ms=float(hand_status["process_p95_ms"]),
         )
 
     def status_dict(self) -> dict[str, Any]:
@@ -1253,6 +1339,13 @@ class ControlPCSupervisor:
             maximum = np.asarray(arm_entries.get(side, {}).get("workspace_xyz_max", [0, 0, 0]), dtype=float)
             poses[side] = ArmTarget(((minimum + maximum) * 0.5).tolist(), [0, 0, 0, 1])
         self.adapter.set_dryrun_poses(desired=poses, current=poses)
+
+    def _hands_running(self) -> bool:
+        return bool(
+            self.state_machine.state is TeleopState.RUNNING
+            and not self.loop.pause_latched
+            and self.loop.state not in {LoopState.PAUSED, LoopState.FAULT, LoopState.STOPPED}
+        )
 
     def _calibration_status_message(self) -> str:
         progress = self.calibrator.progress(monotonic_ns())

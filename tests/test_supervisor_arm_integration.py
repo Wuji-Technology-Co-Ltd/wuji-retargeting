@@ -10,7 +10,9 @@ from stardust_wuji_quest3_pc_retargeting.sim.mock_webxr_sender import build_mock
 from stardust_wuji_quest3_pc_retargeting.runtime.supervisor import ControlPCSupervisor
 from stardust_wuji_quest3_pc_retargeting.arm_control.astribot_adapter import AstribotAdapter
 from stardust_wuji_quest3_pc_retargeting.arm_control.arm_mapper import ArmTarget
+from stardust_wuji_quest3_pc_retargeting.hand_control.command_bridge import DryRunHandCommandSink
 from stardust_wuji_quest3_pc_retargeting.protocol.validation import validate_tracking_frame
+from stardust_wuji_quest3_pc_retargeting.runtime.config import load_yaml_config
 import pytest
 
 
@@ -105,6 +107,50 @@ def test_operator_pause_streams_frozen_cartesian_hold_until_reengage():
         assert status.teleop_state == "PAUSED"
         assert status.sent_cycles > sent_before
         assert status.sdk_last_call_interval_ms > 0.0
+    finally:
+        supervisor.close()
+
+
+def test_formal_supervisor_runs_dual_hand_dryrun_without_real_hand_hardware():
+    service = load_yaml_config("configs/services/control_pc_default.yaml")
+    sink = DryRunHandCommandSink()
+    supervisor = ControlPCSupervisor(
+        config(),
+        arm="both",
+        enable_hand_pipeline=True,
+        hand_config=service["hands"],
+        hand_sink=sink,
+        hand_retarget_real=False,
+    )
+    supervisor.start()
+    try:
+        feed(supervisor, 1)
+        assert supervisor.execute_command("engage").accepted is True
+        feed(supervisor, 2, both_wrist_z=0.01)
+        deadline = time.monotonic() + 1.0
+        while (
+            (sink.snapshot() is None or sink.snapshot().seq != 2)
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+        frame = sink.snapshot()
+        assert frame is not None
+        assert set(frame.hands) == {"left", "right"}
+        assert len(frame.hands["left"].safe_qpos) == 20
+        assert frame.hands["left"].enabled is True
+        status = supervisor.status_snapshot()
+        assert status.hand_pipeline_enabled is True
+        assert status.hand_retarget_real is False
+        assert status.hand_command_sink == "dry-run"
+        assert status.hand_output_frames > 0
+
+        assert supervisor.execute_command("pause").accepted is True
+        feed(supervisor, 3, both_wrist_z=0.01)
+        deadline = time.monotonic() + 1.0
+        while sink.snapshot().seq != 3 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert sink.snapshot().hands["left"].enabled is False
+        assert sink.snapshot().hands["right"].enabled is False
     finally:
         supervisor.close()
 

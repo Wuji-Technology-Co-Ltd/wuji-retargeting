@@ -10,12 +10,24 @@ def test_gateway_and_cli_modules_import():
     import stardust_wuji_quest3_pc_retargeting.sim.mock_webxr_sender as mock_sender
     import stardust_wuji_quest3_pc_retargeting.tools.run_control_pc_supervisor as supervisor_cli
     import stardust_wuji_quest3_pc_retargeting.tools.run_orin_web_gateway as gateway_cli
+    import stardust_wuji_quest3_pc_retargeting.tools.run_wujihand_ros2_bridge as hand_bridge_cli
     import stardust_wuji_quest3_pc_retargeting.web_gateway.websocket_relay as relay
 
     assert callable(mock_sender.build_mock_frame)
     assert callable(supervisor_cli.main)
     assert callable(gateway_cli.main)
+    assert callable(hand_bridge_cli.main)
     assert callable(relay.relay_websockets)
+
+
+def test_hand_bridge_cli_is_recording_only_by_default():
+    from stardust_wuji_quest3_pc_retargeting.tools.run_wujihand_ros2_bridge import parse_args
+
+    args = parse_args([])
+
+    assert args.listen_host == "127.0.0.1"
+    assert args.listen_port == 9011
+    assert args.publish_driver_commands is False
 
 
 def test_quest3_web_static_files_exist_and_avoid_control_buttons():

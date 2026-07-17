@@ -8,6 +8,75 @@ https://github.com/user-attachments/assets/72116289-7a33-4a6b-83ca-fb4d9aaece0d
 
 **Get started with [Quick Start](#quick-start). For detailed documentation, please refer to [Retargeting Tutorial](https://docs.wuji.tech/en/wuji-hand/latest/retargeting) on Wuji Docs Center.**
 
+## Quest3 + Astribot 一键遥操启动
+
+当前 `quest3-astribot-teleop` 集成的默认操作方式是：Orin 单独运行 Web Gateway，控制 PC 用一条命令同时启动 ROS2 Hand Bridge 和真实双臂 Supervisor。
+
+> 警告：默认一键命令会控制真实双机械臂，使用 2.0 m/s 线速度、3.0 rad/s 角速度和 2 m workspace。启动前必须确认物理急停可立即触达，机器人周围无人且无障碍物。
+
+### 1. Orin：启动 Web Gateway
+
+```bash
+python3 -m \
+  stardust_wuji_quest3_pc_retargeting.tools.run_orin_web_gateway \
+  --web-host 0.0.0.0 --web-port 8443 \
+  --ws-host 0.0.0.0 --ws-port 9002 \
+  --control-pc-url ws://192.168.0.100:9001
+```
+
+### 2. 控制 PC：一键启动 Bridge 与 Supervisor
+
+从 `wuji-teleop` 根目录直接启动：
+
+```bash
+/home/zxc/Desktop/wuji/wuji-teleop/start_quest3_astribot_teleop.sh
+```
+
+在仓库内部启动等价命令：
+
+```bash
+./scripts/run_full_arm_hand_teleop.sh
+```
+
+该脚本会：
+
+- 加载统一 Astribot / ROS2 / Retargeter Python 环境；
+- 后台启动 recording-only ROS2 Hand Bridge；
+- 前台启动交互式真实双臂固定锚点 Supervisor；
+- 启用左右手真实 Retargeter；
+- 在退出时同时清理 Supervisor 和 Bridge。
+
+当前不会启动真实 WujiHand 驱动，也不会发布
+`/left_hand/joint_commands` 或 `/right_hand/joint_commands`。不主动运行
+`ros2 bag record` 就不会录制 rosbag。
+
+Quest 进入 WebXR 后，在 `teleop>` 中执行：
+
+```text
+S
+E
+```
+
+每次 `E` 只输入一次，保持头部和双腕稳定约两秒，等待自动进入
+`RUNNING`。日常命令为 `S`、`E`、`P`、`R`。
+
+正常停止时先执行 `P`，需要时执行 `R`，然后在一键启动终端按
+`Ctrl+C`。结束信息应为：
+
+```text
+Supervisor and Hand Bridge stopped.
+```
+
+不动真实机械臂的检查模式：
+
+```bash
+/home/zxc/Desktop/wuji/wuji-teleop/start_quest3_astribot_teleop.sh --dry-run
+```
+
+本机完整操作手册位于
+`/home/zxc/Desktop/wuji/wuji-teleop/naked_teleop.md`，Bridge 与 Retargeter 说明见
+[Quest3 双手 dry-run 与 ROS2 Hand Bridge](docs/quest3-wujihand-ros2-dryrun.md)。
+
 ## Repository Structure
 
 ```text
@@ -148,6 +217,42 @@ The Wuji Glove path adds per-hand configs (`adaptive_analytical_wuji_glove_left.
 ### Custom Input Devices
 
 Want to integrate your own hand input device? Follow the [Custom Input Device Integration Guide](docs/new-device-integration.md) — most cases require only a small wrapper class, no algorithm changes.
+
+## Quest3 + Astribot 手动分开启动
+
+日常操作优先使用前面的一键脚本。只有需要分别查看 Bridge 与
+Supervisor 日志、替换端口或排查启动问题时，才使用以下方式。
+
+先启动 recording-only Bridge：
+
+```bash
+cd /home/zxc/Desktop/wuji/wuji-teleop/wuji-retargeting
+
+./scripts/run_in_unified_teleop_env.sh \
+  python -m \
+  stardust_wuji_quest3_pc_retargeting.tools.run_wujihand_ros2_bridge \
+  --listen-host 127.0.0.1 \
+  --listen-port 9011
+```
+
+确认输出包含 `driver_commands=DISABLED`，然后在另一个控制 PC 终端启动
+Supervisor：
+
+```bash
+./scripts/run_in_unified_teleop_env.sh \
+  python -m \
+  stardust_wuji_quest3_pc_retargeting.tools.run_control_pc_supervisor \
+  --run-m8-fixed-anchor-real \
+  --host 0.0.0.0 --port 9001 \
+  --arm both --mapping-mode relative \
+  --m8-position-scale 2.0 \
+  --m8-rotation-scale 1.0 \
+  --enable-hand-dryrun \
+  --hand-retarget-real \
+  --hand-control-rate-hz 120 \
+  --hand-bridge-udp-host 127.0.0.1 \
+  --hand-bridge-udp-port 9011
+```
 
 ## Citation
 

@@ -13,6 +13,10 @@ import websockets
 
 from stardust_wuji_quest3_pc_retargeting.protocol.json_codec import encode_message
 from stardust_wuji_quest3_pc_retargeting.hardware_audit.m8_waiver import validate_m8_waiver
+from stardust_wuji_quest3_pc_retargeting.hand_control.command_bridge import (
+    DryRunHandCommandSink,
+    UdpHandCommandSink,
+)
 from stardust_wuji_quest3_pc_retargeting.runtime.config import load_yaml_config
 from stardust_wuji_quest3_pc_retargeting.runtime.control_commands import parse_control_command
 from stardust_wuji_quest3_pc_retargeting.runtime.supervisor import ControlPCSupervisor
@@ -362,6 +366,16 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
                 ).strip()
                 if init_phrase != "M8 INIT JOINT RECOVERY PHYSICAL ESTOP":
                     raise RuntimeError("M8 init-recovery confirmation did not match")
+    hand_pipeline_enabled = bool(
+        args.enable_hand_dryrun
+        or args.hand_retarget_real
+        or args.hand_bridge_udp_port is not None
+    )
+    hand_sink = (
+        UdpHandCommandSink(args.hand_bridge_udp_host, args.hand_bridge_udp_port)
+        if args.hand_bridge_udp_port is not None
+        else DryRunHandCommandSink()
+    )
     return ControlPCSupervisor(
         arm_config,
         arm=args.arm,
@@ -372,6 +386,11 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
         high_control_rights=args.allow_control_takeover,
         allow_orientation_control=args.enable_m8_orientation,
         allow_real_absolute=args.enable_m8_full_absolute,
+        enable_hand_pipeline=hand_pipeline_enabled,
+        hand_config=service.get("hands", {}),
+        hand_sink=hand_sink,
+        hand_retarget_real=bool(args.hand_retarget_real),
+        hand_control_rate_hz=float(args.hand_control_rate_hz),
     )
 
 
@@ -501,6 +520,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--enable-real-hand", action="store_true")
+    parser.add_argument(
+        "--enable-hand-dryrun",
+        action="store_true",
+        help="run the formal dual-hand pipeline without publishing to real hand drivers",
+    )
+    parser.add_argument(
+        "--hand-retarget-real",
+        action="store_true",
+        help="use the configured Wuji Retargeter instead of deterministic dry-run qpos",
+    )
+    parser.add_argument("--hand-control-rate-hz", type=float, default=120.0)
+    parser.add_argument("--hand-bridge-udp-host", default="127.0.0.1")
+    parser.add_argument(
+        "--hand-bridge-udp-port",
+        type=int,
+        default=None,
+        help="send timestamped dual-hand frames to the standalone ROS2 bridge over localhost UDP",
+    )
     parser.add_argument("--enable-real-arm", action="store_true")
     parser.add_argument("--m8-waiver", default=None)
     parser.add_argument("--confirm-m8-real-arm", action="store_true")
@@ -606,7 +643,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         supervisor = build_supervisor(args)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
-    asyncio.run(run_server(args.host, args.port, supervisor, args.command, args.interactive))
+    try:
+        asyncio.run(run_server(args.host, args.port, supervisor, args.command, args.interactive))
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
