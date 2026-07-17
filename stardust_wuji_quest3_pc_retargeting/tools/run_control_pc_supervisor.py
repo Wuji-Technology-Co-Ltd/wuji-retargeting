@@ -47,6 +47,12 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
                 raise RuntimeError("M8 init recovery duration must be in [2, 15] seconds")
             recovery = arm_config.setdefault("init_recovery", {})
             recovery["duration_sec"] = duration
+            handoff_hold = float(args.m8_init_cartesian_hold_warmup_sec)
+            if not isfinite(handoff_hold) or not 0.10 <= handoff_hold <= 3.0:
+                raise RuntimeError(
+                    "M8 init Cartesian handoff hold must be in [0.10, 3.0] seconds"
+                )
+            recovery["cartesian_handoff_hold_sec"] = handoff_hold
             arm_targets = recovery.get("arms", {})
             for side in ("left", "right"):
                 values = arm_targets.get(side)
@@ -485,6 +491,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--enable-m8-init-recovery", action="store_true")
     parser.add_argument("--confirm-m8-init-recovery", action="store_true")
     parser.add_argument("--m8-init-recovery-duration-sec", type=float, default=4.0)
+    parser.add_argument(
+        "--m8-init-cartesian-hold-warmup-sec",
+        type=float,
+        default=0.50,
+        help=(
+            "compatibility name for the Cartesian hold established inside R "
+            "after joint settle verification"
+        ),
+    )
     parser.add_argument("--m8-anchor-reacquire-linear-speed-mps", type=float, default=0.10)
     parser.add_argument("--m8-anchor-reacquire-linear-accel-mps2", type=float, default=0.30)
     parser.add_argument("--m8-anchor-reacquire-angular-accel-rad-s2", type=float, default=1.50)

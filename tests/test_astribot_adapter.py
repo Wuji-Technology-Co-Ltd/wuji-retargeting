@@ -99,6 +99,47 @@ def test_real_adapter_rechecks_control_rights_before_every_send():
     assert adapter.stats.send_calls == 0
 
 
+def test_real_adapter_latches_driver_heartbeat_failure_before_send():
+    robot = Mock()
+    robot.arm_left_name = "left"
+    robot.arm_right_name = "right"
+    robot.chassis_frame_name = "chassis"
+    robot.get_control_rights_status.return_value = True
+    robot.astribot_interface.is_alive.return_value = True
+    robot.astribot_interface.get_robot_mode.return_value = "safe"
+    robot.astribot_interface.flag_robot_driver_alive = True
+    adapter = AstribotAdapter(enable_real=True, robot_factory=Mock(return_value=robot))
+    adapter.initialize()
+    robot.astribot_interface.flag_robot_driver_alive = False
+
+    with pytest.raises(RuntimeError, match="heartbeat is not alive"):
+        adapter.send_targets({"left": pose(1)})
+
+    robot.astribot_interface.flag_robot_driver_alive = True
+    with pytest.raises(RuntimeError, match="heartbeat is not alive"):
+        adapter.send_targets({"left": pose(1)})
+    robot.set_cartesian_pose.assert_not_called()
+
+
+def test_real_adapter_latches_vendor_driver_error_code_before_send():
+    robot = Mock()
+    robot.arm_left_name = "left"
+    robot.arm_right_name = "right"
+    robot.chassis_frame_name = "chassis"
+    robot.get_control_rights_status.return_value = True
+    robot.astribot_interface.is_alive.return_value = True
+    robot.astribot_interface.get_robot_mode.return_value = "safe"
+    robot.astribot_interface.flag_robot_driver_alive = True
+    adapter = AstribotAdapter(enable_real=True, robot_factory=Mock(return_value=robot))
+    adapter.initialize()
+    robot.astribot_interface.last_reported_code = "13234026"
+
+    with pytest.raises(RuntimeError, match="13234026"):
+        adapter.send_targets({"left": pose(1)})
+
+    robot.set_cartesian_pose.assert_not_called()
+
+
 def test_real_adapter_refuses_existing_control_rights_service_before_sdk_import(monkeypatch):
     completed = Mock(returncode=0, stdout="/astribot/control_rights\n", stderr="")
     monkeypatch.setattr(
@@ -167,6 +208,8 @@ def test_real_adapter_init_recovery_moves_only_both_arm_joint_groups_and_checks_
     left = [0.1] * 7
     right = [-0.1] * 7
     robot.get_current_joints_position.return_value = [left, right]
+    robot.get_current_joints_velocity.return_value = [[0.0] * 7, [0.0] * 7]
+    robot.get_current_joints_acceleration.return_value = [[0.0] * 7, [0.0] * 7]
     robot.move_joints_position.return_value = True
     adapter = AstribotAdapter(enable_real=True, robot_factory=Mock(return_value=robot))
     adapter.initialize()
@@ -175,6 +218,7 @@ def test_real_adapter_init_recovery_moves_only_both_arm_joint_groups_and_checks_
         {"left": left, "right": right},
         duration_sec=4.0,
         tolerance_rad=0.1,
+        settle_stable_samples=1,
     )
 
     robot.move_joints_position.assert_called_once_with(
@@ -185,3 +229,82 @@ def test_real_adapter_init_recovery_moves_only_both_arm_joint_groups_and_checks_
     )
     assert result == {"left": left, "right": right}
     assert adapter.stats.init_recovery_calls == 1
+
+
+def test_real_adapter_fails_closed_when_joint_recovery_reports_driver_error():
+    robot = Mock()
+    robot.arm_left_name = "left-sdk"
+    robot.arm_right_name = "right-sdk"
+    robot.chassis_frame_name = "base-sdk"
+    robot.get_control_rights_status.return_value = True
+    robot.astribot_interface.is_alive.return_value = True
+    robot.astribot_interface.get_robot_mode.return_value = "safe"
+    robot.astribot_interface.flag_robot_driver_alive = True
+    robot.get_joints_position_limit.return_value = ([[-3.0] * 7], [[3.0] * 7])
+
+    def report_acceleration_error(*args, **kwargs):
+        robot.astribot_interface.last_reported_code = "13234026"
+        return True
+
+    robot.move_joints_position.side_effect = report_acceleration_error
+    adapter = AstribotAdapter(enable_real=True, robot_factory=Mock(return_value=robot))
+    adapter.initialize()
+
+    with pytest.raises(RuntimeError, match="13234026"):
+        adapter.move_arms_to_joint_positions(
+            {"left": [0.1] * 7},
+            duration_sec=4.0,
+            tolerance_rad=0.1,
+        )
+
+    robot.get_current_joints_position.assert_not_called()
+    with pytest.raises(RuntimeError, match="13234026"):
+        adapter.send_targets({"left": pose(1)})
+
+
+def test_real_adapter_refuses_cartesian_handoff_when_joint_settle_times_out():
+    robot = Mock()
+    robot.arm_left_name = "left-sdk"
+    robot.arm_right_name = "right-sdk"
+    robot.chassis_frame_name = "base-sdk"
+    robot.get_control_rights_status.return_value = True
+    robot.astribot_interface.is_alive.return_value = True
+    robot.astribot_interface.get_robot_mode.return_value = "safe"
+    robot.astribot_interface.flag_robot_driver_alive = True
+    robot.get_joints_position_limit.return_value = ([[-3.0] * 7], [[3.0] * 7])
+    robot.move_joints_position.return_value = True
+    robot.get_current_joints_velocity.return_value = [[0.20] * 7]
+    robot.get_current_joints_acceleration.return_value = [[1.00] * 7]
+    adapter = AstribotAdapter(enable_real=True, robot_factory=Mock(return_value=robot))
+    adapter.initialize()
+
+    with pytest.raises(RuntimeError, match="did not settle before Cartesian handoff"):
+        adapter.move_arms_to_joint_positions(
+            {"left": [0.1] * 7},
+            duration_sec=4.0,
+            tolerance_rad=0.1,
+            settle_timeout_sec=0.1,
+            settle_poll_sec=0.01,
+        )
+
+    robot.get_current_joints_position.assert_not_called()
+
+
+def test_real_adapter_rejects_post_handoff_joint_posture_drift():
+    robot = Mock()
+    robot.arm_left_name = "left-sdk"
+    robot.arm_right_name = "right-sdk"
+    robot.chassis_frame_name = "base-sdk"
+    robot.get_control_rights_status.return_value = True
+    robot.astribot_interface.is_alive.return_value = True
+    robot.astribot_interface.get_robot_mode.return_value = "safe"
+    robot.astribot_interface.flag_robot_driver_alive = True
+    robot.get_current_joints_position.return_value = [[0.0, 0.0, 0.0, 0.20, 0.0, 0.0, 0.0]]
+    adapter = AstribotAdapter(enable_real=True, robot_factory=Mock(return_value=robot))
+    adapter.initialize()
+
+    with pytest.raises(RuntimeError, match="changed the unique init joint posture"):
+        adapter.verify_arm_joint_positions(
+            {"left": [0.0] * 7},
+            tolerance_rad=0.10,
+        )

@@ -51,6 +51,9 @@ class AstribotAdapter:
         self._dryrun_desired = {side: self._copy_target(identity) for side in self._names}
         self._dryrun_current = {side: self._copy_target(identity) for side in self._names}
         self.last_targets: dict[str, ArmTarget] = {}
+        self._driver_fault_reason = ""
+        self._last_live_health_check_monotonic: float | None = None
+        self._live_health_check_interval_sec = 0.25
 
     @property
     def initialized(self) -> bool:
@@ -146,13 +149,17 @@ class AstribotAdapter:
         if not self.enable_real:
             self._dryrun_desired.update(self.last_targets)
             return
-        self._robot.set_cartesian_pose(
-            names,
-            poses,
-            control_way=self.control_way,
-            use_wbc=False,
-            add_default_torso=self.add_default_torso,
-        )
+        try:
+            self._robot.set_cartesian_pose(
+                names,
+                poses,
+                control_way=self.control_way,
+                use_wbc=False,
+                add_default_torso=self.add_default_torso,
+            )
+        except Exception as exc:
+            self._latch_driver_fault(f"Astribot Cartesian command failed: {exc}")
+            raise
 
     def move_arms_to_joint_positions(
         self,
@@ -160,6 +167,11 @@ class AstribotAdapter:
         *,
         duration_sec: float,
         tolerance_rad: float,
+        settle_timeout_sec: float = 2.0,
+        settle_velocity_rad_s: float = 0.03,
+        settle_acceleration_rad_s2: float = 0.50,
+        settle_stable_samples: int = 5,
+        settle_poll_sec: float = 0.05,
     ) -> dict[str, list[float]]:
         self._require_initialized()
         duration = float(duration_sec)
@@ -168,6 +180,21 @@ class AstribotAdapter:
             raise ValueError("init recovery duration must be in [2, 15] seconds")
         if not 0.0 < tolerance <= 0.25:
             raise ValueError("init recovery joint tolerance must be in (0, 0.25] rad")
+        settle_timeout = float(settle_timeout_sec)
+        settle_velocity = float(settle_velocity_rad_s)
+        settle_acceleration = float(settle_acceleration_rad_s2)
+        stable_samples = int(settle_stable_samples)
+        settle_poll = float(settle_poll_sec)
+        if not 0.1 <= settle_timeout <= 10.0:
+            raise ValueError("init recovery settle timeout must be in [0.1, 10] seconds")
+        if not 0.0 < settle_velocity <= 1.0:
+            raise ValueError("init recovery settle velocity must be in (0, 1] rad/s")
+        if not 0.0 < settle_acceleration <= 10.0:
+            raise ValueError("init recovery settle acceleration must be in (0, 10] rad/s^2")
+        if not 1 <= stable_samples <= 50:
+            raise ValueError("init recovery settle stable samples must be in [1, 50]")
+        if not 0.01 <= settle_poll <= 0.25:
+            raise ValueError("init recovery settle poll period must be in [0.01, 0.25] seconds")
         sides = [side for side in ("left", "right") if side in targets]
         if not sides:
             raise ValueError("init recovery requires at least one arm target")
@@ -192,13 +219,29 @@ class AstribotAdapter:
                         f"{side} init joint {index}={value:.6f} exceeds "
                         f"[{float(low[index]):.6f}, {float(high[index]):.6f}]"
                     )
-        result = self._robot.move_joints_position(
+        try:
+            result = self._robot.move_joints_position(
+                names,
+                commands,
+                duration=duration,
+                add_default_torso=False,
+            )
+        except Exception as exc:
+            self._latch_driver_fault(f"Astribot init joint recovery failed: {exc}")
+            raise
+        if result is False:
+            raise RuntimeError("Astribot move_joints_position reported failure")
+        self._require_real_safety(full_check=True)
+        self._wait_for_arm_joint_settle(
             names,
-            commands,
-            duration=duration,
-            add_default_torso=False,
+            timeout_sec=settle_timeout,
+            max_velocity_rad_s=settle_velocity,
+            max_acceleration_rad_s2=settle_acceleration,
+            stable_samples=stable_samples,
+            poll_sec=settle_poll,
         )
         current = self._robot.get_current_joints_position(names=names)
+        self._require_real_safety(full_check=False)
         for side, command, observed in zip(sides, commands, current):
             if len(observed) != 7:
                 raise RuntimeError(f"{side} SDK current joint response must contain 7 joints")
@@ -211,9 +254,48 @@ class AstribotAdapter:
                     f"{side} init recovery did not settle: max joint error "
                     f"{maximum_error:.4f} rad exceeds {tolerance:.4f} rad"
                 )
-        if result is False:
-            raise RuntimeError("Astribot move_joints_position reported failure")
         return {side: list(command) for side, command in zip(sides, commands)}
+
+    def verify_arm_joint_positions(
+        self,
+        targets: Mapping[str, list[float]],
+        *,
+        tolerance_rad: float,
+    ) -> dict[str, float]:
+        self._require_initialized()
+        tolerance = float(tolerance_rad)
+        if not 0.0 < tolerance <= 0.25:
+            raise ValueError("joint verification tolerance must be in (0, 0.25] rad")
+        sides = [side for side in ("left", "right") if side in targets]
+        if not sides:
+            raise ValueError("joint verification requires at least one arm target")
+        commands = {side: [float(value) for value in targets[side]] for side in sides}
+        for side, values in commands.items():
+            if len(values) != 7:
+                raise ValueError(f"{side} joint verification target must contain 7 joints")
+        if not self.enable_real:
+            return {side: 0.0 for side in sides}
+        self._require_real_safety(full_check=False)
+        names = [self._names[side] for side in sides]
+        current = self._robot.get_current_joints_position(names=names)
+        self._require_real_safety(full_check=False)
+        if len(current) != len(sides):
+            raise RuntimeError("Astribot joint verification response does not match enabled arms")
+        errors: dict[str, float] = {}
+        for side, observed in zip(sides, current):
+            if len(observed) != 7:
+                raise RuntimeError(f"{side} SDK current joint response must contain 7 joints")
+            maximum_error = max(
+                abs(float(actual) - target)
+                for actual, target in zip(observed, commands[side])
+            )
+            errors[side] = maximum_error
+            if maximum_error > tolerance:
+                raise RuntimeError(
+                    f"{side} Cartesian handoff changed the unique init joint posture: "
+                    f"max joint error {maximum_error:.4f} rad exceeds {tolerance:.4f} rad"
+                )
+        return errors
 
     def close(self) -> None:
         if self._closed:
@@ -241,18 +323,93 @@ class AstribotAdapter:
         return getattr(self._robot, name)
 
     def _require_real_safety(self, full_check: bool) -> None:
+        if self._driver_fault_reason:
+            raise RuntimeError(self._driver_fault_reason)
         status = getattr(self._robot, "get_control_rights_status", None)
         if not callable(status) or not bool(status()):
             raise RuntimeError("Astribot control rights unavailable; another SDK/control client may be active")
+        interface = getattr(self._robot, "astribot_interface", None)
+        if interface is None:
+            self._latch_driver_fault("Astribot interface is unavailable")
+            raise RuntimeError(self._driver_fault_reason)
+        if getattr(self._robot, "is_alive", True) is False:
+            self._latch_driver_fault("Astribot SDK client is not alive")
+            raise RuntimeError(self._driver_fault_reason)
+        if getattr(interface, "flag_robot_driver_alive", True) is False:
+            self._latch_driver_fault("Astribot driver heartbeat is not alive; restart the driver/session")
+            raise RuntimeError(self._driver_fault_reason)
+        error_code = getattr(interface, "last_reported_code", None)
+        if isinstance(error_code, (str, int)):
+            error_text = str(error_code)
+            if len(error_text) >= 3 and error_text[2] == "2":
+                self._latch_driver_fault(
+                    f"Astribot driver reported error {error_text}; restart the driver/session"
+                )
+                raise RuntimeError(self._driver_fault_reason)
+        now = time.monotonic()
+        live_check_due = (
+            full_check
+            or self._last_live_health_check_monotonic is None
+            or now - self._last_live_health_check_monotonic >= self._live_health_check_interval_sec
+        )
+        if not live_check_due:
+            return
+        is_alive = getattr(interface, "is_alive", None)
+        if not callable(is_alive) or not bool(is_alive()):
+            self._latch_driver_fault("Astribot interface is not alive; restart the driver/session")
+            raise RuntimeError(self._driver_fault_reason)
+        self._last_live_health_check_monotonic = now
         if not full_check:
             return
-        interface = getattr(self._robot, "astribot_interface", None)
-        is_alive = getattr(interface, "is_alive", None)
         get_mode = getattr(interface, "get_robot_mode", None)
-        if not callable(is_alive) or not bool(is_alive()):
-            raise RuntimeError("Astribot interface is not alive")
         if not callable(get_mode) or get_mode() != "safe":
             raise RuntimeError("Astribot robot mode must be safe")
+
+    def _latch_driver_fault(self, reason: str) -> None:
+        if not self._driver_fault_reason:
+            self._driver_fault_reason = str(reason)
+
+    def _wait_for_arm_joint_settle(
+        self,
+        names: list[str],
+        *,
+        timeout_sec: float,
+        max_velocity_rad_s: float,
+        max_acceleration_rad_s2: float,
+        stable_samples: int,
+        poll_sec: float,
+    ) -> None:
+        deadline = time.monotonic() + float(timeout_sec)
+        stable_count = 0
+        last_velocity = float("inf")
+        last_acceleration = float("inf")
+        while time.monotonic() < deadline:
+            self._require_real_safety(full_check=False)
+            velocities = self._robot.get_current_joints_velocity(names=names)
+            accelerations = self._robot.get_current_joints_acceleration(names=names)
+            if len(velocities) != len(names) or len(accelerations) != len(names):
+                raise RuntimeError("Astribot joint settle response does not match enabled arms")
+            velocity_values = [abs(float(value)) for group in velocities for value in group]
+            acceleration_values = [abs(float(value)) for group in accelerations for value in group]
+            if not velocity_values or not acceleration_values:
+                raise RuntimeError("Astribot joint settle response is empty")
+            last_velocity = max(velocity_values)
+            last_acceleration = max(acceleration_values)
+            if (
+                last_velocity <= max_velocity_rad_s
+                and last_acceleration <= max_acceleration_rad_s2
+            ):
+                stable_count += 1
+                if stable_count >= stable_samples:
+                    return
+            else:
+                stable_count = 0
+            time.sleep(float(poll_sec))
+        raise RuntimeError(
+            "init recovery joints did not settle before Cartesian handoff: "
+            f"max velocity {last_velocity:.4f} rad/s, "
+            f"max acceleration {last_acceleration:.4f} rad/s^2"
+        )
 
     @staticmethod
     def _require_unowned_control_service() -> None:

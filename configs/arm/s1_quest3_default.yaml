@@ -8,6 +8,13 @@ init_recovery:
   section: desired
   duration_sec: 4.0
   joint_tolerance_rad: 0.10
+  settle_timeout_sec: 2.0
+  settle_velocity_rad_s: 0.03
+  settle_acceleration_rad_s2: 0.50
+  settle_stable_samples: 5
+  settle_poll_sec: 0.05
+  cartesian_handoff_hold_sec: 0.50
+  post_handoff_joint_tolerance_rad: 0.10
   arms:
     left: [0.159258, -0.0217864, -1.42076, 1.65681, -0.347972, 0.112456, 0.126563]
     right: [-0.164673, -0.0218748, 1.41752, 1.65603, 0.34339, 0.112533, -0.123686]

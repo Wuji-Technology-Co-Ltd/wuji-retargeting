@@ -59,9 +59,11 @@ class ArmLoopStats:
     loop_period_ns: list[int] = field(default_factory=list)
     mapper_time_ns: list[int] = field(default_factory=list)
     sdk_call_time_ns: list[int] = field(default_factory=list)
+    sdk_call_interval_ns: list[int] = field(default_factory=list)
     frame_age_ns: list[int] = field(default_factory=list)
     target_linear_speeds_mps: list[float] = field(default_factory=list)
     target_angular_speeds_rad_s: list[float] = field(default_factory=list)
+    paused_hold_cycles: int = 0
 
     def record(self, series: list[int], value: int, maximum_samples: int = 10000) -> None:
         series.append(int(value))
@@ -113,11 +115,17 @@ class ArmControlLoop:
         self._thread: Thread | None = None
         self._owner_thread_id: int | None = None
         self._pause_latched = False
+        self._paused_hold_targets: dict[str, ArmTarget] = {}
+        self._last_sdk_call_ns: int | None = None
         self._deadline_reset_requested = False
 
     @property
     def pause_latched(self) -> bool:
         return self._pause_latched
+
+    @property
+    def paused_hold_active(self) -> bool:
+        return bool(self._paused_hold_targets)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -136,13 +144,16 @@ class ArmControlLoop:
         if self.state is LoopState.FAULT:
             raise RuntimeError("faulted control loop must be reset before resume")
         self._pause_latched = False
+        self._paused_hold_targets.clear()
         self.state = LoopState.HOLD
 
-    def begin_calibration(self) -> None:
+    def begin_calibration(self, *, keep_paused_hold: bool = False) -> None:
         if self.state is LoopState.FAULT:
             raise RuntimeError("faulted control loop cannot calibrate")
         self._pause_latched = False
         self._last_targets.clear()
+        if not keep_paused_hold:
+            self._paused_hold_targets.clear()
         self.state = LoopState.PAUSED
 
     def pause(self, reason: str = "operator pause") -> None:
@@ -150,14 +161,73 @@ class ArmControlLoop:
         self._pause_latched = True
         self._last_targets.clear()
         self._last_sent_targets.clear()
+        self._paused_hold_targets.clear()
         self.state = LoopState.PAUSED
         self.fault_reason = reason
+
+    def pause_with_hold(
+        self,
+        reason: str = "operator pause hold",
+        targets: Mapping[str, ArmTarget] | None = None,
+    ) -> None:
+        self._assert_owner()
+        self._cancel_calibration(reason)
+        source = self._last_targets if targets is None else targets
+        if source:
+            self._paused_hold_targets = {
+                side: self._copy_target(target)
+                for side, target in source.items()
+            }
+        self._pause_latched = True
+        self._last_targets.clear()
+        self.state = LoopState.PAUSED
+        self.fault_reason = reason
+
+    def set_paused_hold_targets(self, targets: Mapping[str, ArmTarget]) -> None:
+        self._assert_owner()
+        self._paused_hold_targets = {
+            side: self._copy_target(target)
+            for side, target in targets.items()
+        }
+
+    def establish_paused_hold(
+        self,
+        targets: Mapping[str, ArmTarget],
+        duration_sec: float,
+    ) -> int:
+        self._assert_owner()
+        duration = float(duration_sec)
+        if not 0.10 <= duration <= 3.0:
+            raise ValueError("Cartesian handoff hold duration must be in [0.10, 3.0] seconds")
+        copied = {
+            side: self._copy_target(target)
+            for side, target in targets.items()
+        }
+        if not copied:
+            raise ValueError("Cartesian handoff requires at least one arm target")
+        self._paused_hold_targets = copied
+        self._pause_latched = True
+        self._last_targets.clear()
+        self.state = LoopState.PAUSED
+        cycles = max(1, int(np.ceil(duration * self.control_rate_hz)))
+        for index in range(cycles):
+            self._send(copied, self.clock_ns())
+            if self.state is LoopState.FAULT:
+                raise RuntimeError(self.fault_reason or "Cartesian handoff failed")
+            self.stats.paused_hold_cycles += 1
+            if index + 1 < cycles:
+                self.sleeper(1.0 / self.control_rate_hz)
+        return cycles
 
     def reset_timing_after_blocking_maintenance(self) -> None:
         self._assert_owner()
         self._last_tick_ns = None
         self._consecutive_deadlines = 0
         self._deadline_reset_requested = True
+
+    def fail_closed(self, reason: str) -> None:
+        self._assert_owner()
+        self._fault(str(reason))
 
     def run(self, max_cycles: int | None = None) -> None:
         if self._owner_thread_id is not None:
@@ -204,13 +274,21 @@ class ArmControlLoop:
             except Exception as exc:
                 self._fault(f"command pump failed: {exc}")
                 return self.state
+        if self.state is LoopState.FAULT:
+            return self.state
         if self._pause_latched:
             self.state = LoopState.PAUSED
+            if self._paused_hold_targets:
+                self._send(self._paused_hold_targets, now)
+                self.stats.paused_hold_cycles += 1
             self.stats.held_cycles += 1
             return self.state
         snapshot = self.tracking_buffer.snapshot()
         if snapshot is None:
-            self.state = LoopState.HOLD
+            self.state = LoopState.PAUSED if self._paused_hold_targets else LoopState.HOLD
+            if self._paused_hold_targets:
+                self._send(self._paused_hold_targets, now)
+                self.stats.paused_hold_cycles += 1
             self.stats.held_cycles += 1
             return self.state
         age_ns = max(0, now - snapshot.receive_time_ns)
@@ -235,11 +313,15 @@ class ArmControlLoop:
             active_candidate = consumed
         else:
             self.stats.held_cycles += 1
-            self.state = LoopState.HOLD
+            self.state = LoopState.PAUSED if self._paused_hold_targets else LoopState.HOLD
         if self._last_targets:
             self._send(self._last_targets, now)
             if self.state not in {LoopState.FAULT, LoopState.PAUSED}:
                 self.state = LoopState.ACTIVE if active_candidate else LoopState.HOLD
+        elif self._paused_hold_targets:
+            self._send(self._paused_hold_targets, now)
+            self.stats.paused_hold_cycles += 1
+            self.state = LoopState.PAUSED
         return self.state
 
     def _consume(self, snapshot: TrackingSnapshot, dt_sec: float) -> bool | None:
@@ -269,6 +351,12 @@ class ArmControlLoop:
 
     def _send(self, targets: Mapping[str, ArmTarget], command_time_ns: int) -> None:
         self._record_target_speeds(targets, command_time_ns)
+        if self._last_sdk_call_ns is not None:
+            self.stats.record(
+                self.stats.sdk_call_interval_ns,
+                max(0, int(command_time_ns) - self._last_sdk_call_ns),
+            )
+        self._last_sdk_call_ns = int(command_time_ns)
         started = self.clock_ns()
         try:
             self.adapter.send_targets(targets)

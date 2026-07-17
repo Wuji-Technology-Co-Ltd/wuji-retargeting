@@ -120,6 +120,36 @@ def test_loop_records_target_speed_against_actual_tick_time():
     assert loop.stats.target_linear_speeds_mps[-1] == pytest.approx(0.1)
 
 
+def test_paused_hold_keeps_sdk_cadence_without_consuming_tracking_frames():
+    clock = FakeClock()
+    adapter = Adapter()
+    seen = []
+    buffer = LatestTrackingBuffer()
+    buffer.publish({"xr_session_id": "s", "seq": 1}, clock.value)
+    loop = ArmControlLoop(
+        adapter,
+        buffer,
+        lambda frame, dt, received: seen.append(frame["seq"]) or arm_target(0.4),
+        clock_ns=clock,
+    )
+    adapter.initialize()
+    loop.tick(clock.value)
+    assert seen == [1]
+
+    loop.pause_with_hold("operator pause")
+    calls_before = len(adapter.calls)
+    for seq in range(2, 5):
+        clock.value += 10_000_000
+        buffer.publish({"xr_session_id": "s", "seq": seq}, clock.value)
+        assert loop.tick(clock.value) is LoopState.PAUSED
+
+    assert seen == [1]
+    assert len(adapter.calls) == calls_before + 3
+    assert loop.paused_hold_active is True
+    assert loop.stats.paused_hold_cycles == 3
+    assert loop.stats.sdk_call_interval_ns[-1] == 10_000_000
+
+
 def test_fresh_hold_then_stale_pause_uses_local_receive_time():
     clock = FakeClock()
     adapter = Adapter()

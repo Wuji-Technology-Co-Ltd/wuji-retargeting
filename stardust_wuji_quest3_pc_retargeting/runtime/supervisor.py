@@ -117,6 +117,12 @@ class SupervisorStatus:
     engage_operator_yaw_rad: float
     engage_hold_remaining_sec: float
     engage_soft_start_remaining_sec: float
+    pause_hold_active: bool
+    paused_hold_cycles: int
+    sdk_call_interval_p50_ms: float
+    sdk_call_interval_p95_ms: float
+    sdk_call_interval_max_ms: float
+    sdk_last_call_interval_ms: float
 
 
 class ControlPCSupervisor:
@@ -381,6 +387,7 @@ class ControlPCSupervisor:
         if self.loop.state is LoopState.FAULT:
             teleop_state = TeleopState.FAULT.value
         sdk_ms = np.asarray(self.loop.stats.sdk_call_time_ns, dtype=float) / 1e6
+        sdk_interval_ms = np.asarray(self.loop.stats.sdk_call_interval_ns, dtype=float) / 1e6
         engage_hold_remaining = 0.0
         engage_soft_start_remaining = 0.0
         if self._engage_state == "SOFT_START" and self._engage_soft_start_started_ns is not None:
@@ -485,6 +492,20 @@ class ControlPCSupervisor:
             engage_operator_yaw_rad=self.mapper.relative_operator_yaw_rad,
             engage_hold_remaining_sec=engage_hold_remaining,
             engage_soft_start_remaining_sec=engage_soft_start_remaining,
+            pause_hold_active=self.loop.paused_hold_active,
+            paused_hold_cycles=int(self.loop.stats.paused_hold_cycles),
+            sdk_call_interval_p50_ms=(
+                0.0 if sdk_interval_ms.size == 0 else float(np.percentile(sdk_interval_ms, 50))
+            ),
+            sdk_call_interval_p95_ms=(
+                0.0 if sdk_interval_ms.size == 0 else float(np.percentile(sdk_interval_ms, 95))
+            ),
+            sdk_call_interval_max_ms=(
+                0.0 if sdk_interval_ms.size == 0 else float(np.max(sdk_interval_ms))
+            ),
+            sdk_last_call_interval_ms=(
+                0.0 if sdk_interval_ms.size == 0 else float(sdk_interval_ms[-1])
+            ),
         )
 
     def status_dict(self) -> dict[str, Any]:
@@ -548,7 +569,7 @@ class ControlPCSupervisor:
         for arm_filter in self.arm_filters.values():
             arm_filter.reset()
         self.state_machine.state = TeleopState.PAUSED
-        self.loop.pause(reason)
+        self.loop.pause_with_hold(reason)
         self._set_error(reason)
         self._last_command_message = reason
 
@@ -645,6 +666,7 @@ class ControlPCSupervisor:
         for side in self.enabled_sides:
             self.mapper.recenter(side, wrists[side], current[side])
             self.arm_filters[side].reset(current[side])
+        self.loop.set_paused_hold_targets(current)
         self._engage_state = "SOFT_START"
         self._engage_soft_start_started_ns = int(receive_time_ns)
         self._last_command_message = "engage tracking stabilized; current-pose soft start active"
@@ -792,8 +814,8 @@ class ControlPCSupervisor:
         if name == "pause":
             self._cancel_relative_engage_state()
             self.state_machine.state = TeleopState.PAUSED
-            self.loop.pause("operator pause")
-            return True, "teleoperation paused"
+            self.loop.pause_with_hold("operator pause")
+            return True, "teleoperation paused with continuous Cartesian hold"
         if name == "stop":
             self._cancel_relative_engage_state()
             self.state_machine.state = TeleopState.IDLE
@@ -832,6 +854,8 @@ class ControlPCSupervisor:
         return True, "relative recenter complete; state ARMED, explicit start required"
 
     def _engage_for_current_mode(self, now_ns: int) -> tuple[bool, str]:
+        if self.state_machine.state in {TeleopState.ESTOP, TeleopState.FAULT}:
+            return False, f"engage is unavailable while {self.state_machine.state.value}"
         if self.mapper.mode is MappingMode.ABSOLUTE:
             return self._start_absolute_calibration(now_ns, auto_start=True)
         return self._begin_relative_engage(now_ns)
@@ -852,7 +876,7 @@ class ControlPCSupervisor:
         self._engage_started_ns = int(now_ns)
         self._engage_context = self._frame_context(frame)
         self.state_machine.state = TeleopState.PAUSED
-        self.loop.begin_calibration()
+        self.loop.begin_calibration(keep_paused_hold=True)
         with self._status_lock:
             self._last_error = ""
         self._append_relative_engage_sample(frame)
@@ -988,6 +1012,9 @@ class ControlPCSupervisor:
             return False, "recover-init configuration is missing an enabled arm target"
         duration = float(self.init_recovery_config.get("duration_sec", 4.0))
         tolerance = float(self.init_recovery_config.get("joint_tolerance_rad", 0.10))
+        handoff_hold_sec = float(
+            self.init_recovery_config.get("cartesian_handoff_hold_sec", 0.50)
+        )
         self.state_machine.state = TeleopState.PAUSED
         self.loop.pause("operator init recovery")
         try:
@@ -995,19 +1022,53 @@ class ControlPCSupervisor:
                 targets,
                 duration_sec=duration,
                 tolerance_rad=tolerance,
+                settle_timeout_sec=float(
+                    self.init_recovery_config.get("settle_timeout_sec", 2.0)
+                ),
+                settle_velocity_rad_s=float(
+                    self.init_recovery_config.get("settle_velocity_rad_s", 0.03)
+                ),
+                settle_acceleration_rad_s2=float(
+                    self.init_recovery_config.get("settle_acceleration_rad_s2", 0.50)
+                ),
+                settle_stable_samples=int(
+                    self.init_recovery_config.get("settle_stable_samples", 5)
+                ),
+                settle_poll_sec=float(
+                    self.init_recovery_config.get("settle_poll_sec", 0.05)
+                ),
             )
+            current = self.adapter.get_current_poses(frame="chassis")
+            self.loop.establish_paused_hold(current, handoff_hold_sec)
+            self.adapter.verify_arm_joint_positions(
+                targets,
+                tolerance_rad=float(
+                    self.init_recovery_config.get(
+                        "post_handoff_joint_tolerance_rad", tolerance
+                    )
+                ),
+            )
+        except Exception as exc:
+            reason = f"init recovery failed closed: {exc}; process restart required"
+            self.frame_processor.reset_tracking_reacquire()
+            self.mapper.disengage()
+            self.state_machine.fault(reason)
+            if self.loop.state is not LoopState.FAULT:
+                self.loop.fail_closed(reason)
+            raise RuntimeError(reason) from exc
         finally:
             self.loop.reset_timing_after_blocking_maintenance()
         self.frame_processor.reset_tracking_reacquire()
         self.mapper.disengage()
-        for arm_filter in self.arm_filters.values():
-            arm_filter.reset()
+        for side, arm_filter in self.arm_filters.items():
+            arm_filter.reset(current[side])
         self.state_machine.state = TeleopState.PAUSED
-        self.loop.pause("init recovery complete; engage required")
         with self._status_lock:
             self._last_error = ""
         return True, (
             f"arms moved to recorded init joints in {duration:.1f} s; "
+            "joint settle and post-handoff joint posture verified; "
+            "Cartesian hold established inside R; "
             "teleoperation PAUSED; engage required"
         )
 

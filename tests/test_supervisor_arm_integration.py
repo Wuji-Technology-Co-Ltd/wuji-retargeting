@@ -1,6 +1,7 @@
 import time
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import yaml
 
@@ -84,6 +85,26 @@ def test_relative_engage_atomically_recenters_and_starts():
         assert "auto-start" in result.message
         assert supervisor.status_snapshot().teleop_state == "RUNNING"
         assert supervisor.mapper.is_calibrated("left")
+    finally:
+        supervisor.close()
+
+
+def test_operator_pause_streams_frozen_cartesian_hold_until_reengage():
+    supervisor = ControlPCSupervisor(config(), arm="both")
+    supervisor.start()
+    try:
+        feed(supervisor, 1)
+        assert supervisor.execute_command("engage").accepted is True
+        paused = supervisor.execute_command("pause")
+        assert paused.accepted is True
+        assert "continuous Cartesian hold" in paused.message
+        sent_before = supervisor.status_snapshot().sent_cycles
+        time.sleep(0.04)
+        status = supervisor.status_snapshot()
+        assert status.pause_hold_active is True
+        assert status.teleop_state == "PAUSED"
+        assert status.sent_cycles > sent_before
+        assert status.sdk_last_call_interval_ms > 0.0
     finally:
         supervisor.close()
 
@@ -456,8 +477,13 @@ def test_fixed_anchor_recover_init_pauses_atomically_then_stops_until_new_engage
 
         assert recovered.accepted is True
         assert "engage required" in recovered.message
+        assert "Cartesian hold established inside R" in recovered.message
         assert supervisor.status_snapshot().teleop_state == "PAUSED"
         assert supervisor.adapter.stats.init_recovery_calls == 1
+        assert supervisor.status_snapshot().pause_hold_active is True
+        sent_before = supervisor.status_snapshot().sent_cycles
+        time.sleep(0.03)
+        assert supervisor.status_snapshot().sent_cycles > sent_before
         assert supervisor.mapper.is_calibrated("left") is False
         assert supervisor.mapper.is_calibrated("right") is False
 
@@ -465,6 +491,32 @@ def test_fixed_anchor_recover_init_pauses_atomically_then_stops_until_new_engage
         engaged = supervisor.execute_command("engage")
         assert engaged.accepted is True
         assert supervisor.status_snapshot().teleop_state == "RUNNING"
+    finally:
+        supervisor.close()
+
+
+def test_fixed_anchor_recover_init_failure_faults_closed():
+    cfg = config()
+    cfg["safety"]["fixed_anchor_mode"] = True
+    cfg["safety"]["init_recovery_enabled"] = True
+    supervisor = ControlPCSupervisor(cfg, arm="both")
+    supervisor.adapter.move_arms_to_joint_positions = Mock(
+        side_effect=RuntimeError("joint settle timeout")
+    )
+    supervisor.start()
+    try:
+        feed(supervisor, 1)
+        assert supervisor.execute_command("engage").accepted is True
+
+        recovered = supervisor.execute_command("recover-init", timeout=5.0)
+
+        assert recovered.accepted is False
+        assert "failed closed" in recovered.message
+        assert "process restart required" in recovered.message
+        status = supervisor.status_snapshot()
+        assert status.teleop_state == "FAULT"
+        assert status.loop_state == "FAULT"
+        assert status.pause_hold_active is False
     finally:
         supervisor.close()
 

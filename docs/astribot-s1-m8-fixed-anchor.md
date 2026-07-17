@@ -75,6 +75,13 @@ internally and also starts automatically after validation.
 `P`/`p` is the short alias for `pause`; `R`/`r` is the short alias for
 `recover-init`; `S`/`s` is the short alias for `status`.
 
+An operator `P` freezes the last accepted dual-arm Cartesian target and keeps
+sending that exact target at the configured SDK rate. WebXR frames are not
+consumed while paused. This preserves the vendor online-controller cadence and
+avoids reconstructing the WBC/IK path on the next `E`. Confirm this with
+`pause_hold_active=true`, increasing `paused_hold_cycles`, and an approximately
+constant `sdk_last_call_interval_ms` in `S`.
+
 After an operator pause, use `E` again. Keep the HMD and both wrists still until
 `engage_state` changes from `STABILIZING` through `SOFT_START` to `IDLE` and
 `teleop_state` becomes `RUNNING`. Standalone `start` is not an operator command.
@@ -170,6 +177,17 @@ moves both arms as one blocking batch over the configured duration, verifies
 the resulting joint error, clears the old fixed anchors, and remains `PAUSED`.
 It does not require wrist tracking during the return motion and does not
 automatically recalibrate or restart teleoperation.
+
+After the exact joint move, `R` waits for five consecutive low-velocity and
+low-acceleration samples before changing control type. It then performs the
+single joint-to-Cartesian transition inside `R`, using the measured current
+Cartesian pose, and continuously holds that pose while paused. A mild
+control-type transition may therefore be felt during `R`; the following `E`
+only replaces the HMD/wrist anchors and should not introduce another mode
+transition or vibration. After the hold is established, `R` reads the arm
+joints again and verifies that Cartesian takeover did not move away from the
+recorded unique init-joint posture. Any driver error, failed settle gate, or
+post-handoff joint error faults closed and requires a process restart.
 
 The command is unavailable in `ESTOP` or `FAULT`, but does not require a
 separate preceding `P`. After the arms stop at the init joint pose, restore
