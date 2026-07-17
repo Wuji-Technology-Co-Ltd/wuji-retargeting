@@ -165,6 +165,45 @@ def test_real_cli_requires_flag_waiver_and_exact_physical_confirmation(monkeypat
     assert supervisor.enabled_sides == ("left",)
 
 
+def test_fixed_anchor_real_profile_expands_compact_command():
+    args = cli.parse_args(
+        [
+            "--run-m8-fixed-anchor-real",
+            "--host", "0.0.0.0",
+            "--port", "9001",
+            "--arm", "both",
+            "--mapping-mode", "relative",
+            "--m8-position-scale", "2.0",
+            "--m8-rotation-scale", "1.0",
+        ]
+    )
+
+    assert args.enable_real_arm is True
+    assert args.enable_m8_fixed_anchor is True
+    assert args.enable_m8_init_recovery is True
+    assert args.allow_control_takeover is True
+    assert args.m8_max_linear_speed_mps == 2.0
+    assert args.m8_workspace_limit_m == 2.0
+    assert args.m8_position_scale == 2.0
+    assert args.m8_position_alpha == 1.0
+    assert args.m8_orientation_alpha == 1.0
+    assert args.enable_m8_orientation is True
+    assert args.m8_rotation_scale == 1.0
+    assert args.m8_max_angular_speed_rad_s == 3.0
+    assert args.m8_hand_reacquire_timeout_sec == 5.0
+    assert args.m8_hand_reacquire_stable_frames == 12
+    assert args.m8_waiver == cli.M8_FIXED_ANCHOR_REAL_WAIVER
+    assert args.accept_m8_risk_bundle == cli.M8_RISK_BUNDLE_TOKEN
+    assert args.interactive is True
+
+
+def test_fixed_anchor_real_profile_rejects_non_dual_or_absolute_scope():
+    with pytest.raises(RuntimeError, match="requires --arm both"):
+        cli.parse_args(["--run-m8-fixed-anchor-real", "--arm", "left"])
+    with pytest.raises(RuntimeError, match="requires --mapping-mode relative"):
+        cli.parse_args(["--run-m8-fixed-anchor-real", "--mapping-mode", "absolute"])
+
+
 def test_real_cli_high_speed_requires_flag_and_third_confirmation(monkeypatch, tmp_path):
     waiver, _ = write_waiver(tmp_path)
     service = {"arms": {"sdk_root": "/vendor/sdk"}}

@@ -19,6 +19,48 @@ from stardust_wuji_quest3_pc_retargeting.runtime.supervisor import ControlPCSupe
 
 
 M8_RISK_BUNDLE_TOKEN = "M8_ACCEPT_ALL_AUTHORIZED_RISKS"
+M8_FIXED_ANCHOR_REAL_WAIVER = "logs/m7_hardware_audit/m8_operator_waiver.yaml"
+
+
+def apply_m8_fixed_anchor_real_profile(args: argparse.Namespace) -> argparse.Namespace:
+    if not args.run_m8_fixed_anchor_real:
+        return args
+    if args.arm != "both":
+        raise RuntimeError("M8 fixed-anchor real profile requires --arm both")
+    if args.mapping_mode not in {None, "relative"}:
+        raise RuntimeError("M8 fixed-anchor real profile requires --mapping-mode relative")
+    args.mapping_mode = "relative"
+    args.enable_real_arm = True
+    args.enable_m8_fixed_anchor = True
+    args.enable_m8_init_recovery = True
+    args.allow_control_takeover = True
+    args.m8_max_linear_speed_mps = 2.0
+    args.m8_workspace_limit_m = 2.0
+    args.m8_position_alpha = 1.0
+    args.m8_orientation_alpha = 1.0
+    args.enable_m8_orientation = True
+    args.m8_rotation_scale = 1.0
+    args.m8_max_angular_speed_rad_s = 3.0
+    args.m8_hand_reacquire_timeout_sec = 5.0
+    args.m8_hand_reacquire_stable_frames = 12
+    args.m8_arm_wrist_invalid_grace_frames = 2
+    args.m8_engage_stable_frames = 12
+    args.m8_engage_timeout_sec = 5.0
+    args.m8_engage_hold_sec = 0.25
+    args.m8_engage_soft_start_sec = 0.50
+    args.m8_anchor_reacquire_linear_speed_mps = 0.20
+    args.m8_anchor_reacquire_linear_accel_mps2 = 0.50
+    args.m8_anchor_reacquire_angular_accel_rad_s2 = 1.50
+    args.m8_anchor_reacquire_max_position_error_m = 0.20
+    args.m8_orientation_reacquire_speed_rad_s = 0.50
+    args.m8_orientation_reacquire_max_error_rad = 1.57
+    args.m8_init_recovery_duration_sec = 4.0
+    args.m8_init_cartesian_hold_warmup_sec = 0.50
+    args.m8_waiver = args.m8_waiver or M8_FIXED_ANCHOR_REAL_WAIVER
+    if args.accept_m8_risk_bundle is None:
+        args.accept_m8_risk_bundle = M8_RISK_BUNDLE_TOKEN
+    args.interactive = True
+    return args
 
 
 def load_arm_config(service_config_path: str | Path) -> tuple[dict, dict]:
@@ -449,6 +491,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--command", action="append", default=[])
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--dry-run", action="store_true", default=True)
+    parser.add_argument(
+        "--run-m8-fixed-anchor-real",
+        action="store_true",
+        help=(
+            "run the authorized dual-arm fixed-anchor real-hardware profile; "
+            "loads the M8 waiver, bundled risk acceptance, recovery defaults, "
+            "2 m/s and 2 m workspace limits, orientation control, takeover, and console"
+        ),
+    )
     parser.add_argument("--enable-real-hand", action="store_true")
     parser.add_argument("--enable-real-arm", action="store_true")
     parser.add_argument("--m8-waiver", default=None)
@@ -546,12 +597,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             f"{M8_RISK_BUNDLE_TOKEN}; the waiver must authorize the same token"
         ),
     )
-    return parser.parse_args(argv)
+    return apply_m8_fixed_anchor_real_profile(parser.parse_args(argv))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv)
     try:
+        args = parse_args(argv)
         supervisor = build_supervisor(args)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc

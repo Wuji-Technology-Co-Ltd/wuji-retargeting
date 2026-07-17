@@ -6,6 +6,26 @@ increments from those anchors. Tracking recovery never replaces the anchors.
 
 ## Start
 
+Compact validated real-hardware profile:
+
+```bash
+/usr/bin/python3 -m \
+  stardust_wuji_quest3_pc_retargeting.tools.run_control_pc_supervisor \
+  --run-m8-fixed-anchor-real \
+  --host 0.0.0.0 --port 9001 \
+  --arm both --mapping-mode relative \
+  --m8-position-scale 2.0 \
+  --m8-rotation-scale 1.0
+```
+
+The profile switch explicitly selects real dual-arm hardware and applies the
+fixed-anchor, init-joint recovery, orientation, tracking recovery, control
+takeover, expanded workspace, 2 m/s speed, waiver/bundled confirmation, and
+interactive-console settings shown in the full command below. Torso, chassis,
+head, and real hand control remain disabled.
+
+Equivalent expanded command:
+
 ```bash
 /usr/bin/python3 -m \
   stardust_wuji_quest3_pc_retargeting.tools.run_control_pc_supervisor \
