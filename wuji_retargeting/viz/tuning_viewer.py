@@ -122,10 +122,10 @@ class TuningViewer:
         # Load MuJoCo model
         if mujoco_model_dir is None:
             mujoco_model_dir = (
-                Path(__file__).resolve().parents[1]
-                / "wuji-description" / "hand" / "body"
+                Path(__file__).resolve().parents[2]
+                / "example" / "utils" / "mujoco-sim"
             )
-        mjcf_path = Path(mujoco_model_dir) / "mjcf" / f"{self.hand_side}.xml"
+        mjcf_path = Path(mujoco_model_dir) / "wuji_hand_description" / "mjcf" / f"{self.hand_side}.xml"
         if not mjcf_path.exists():
             raise FileNotFoundError(f"MuJoCo model not found: {mjcf_path}")
 

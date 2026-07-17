@@ -37,24 +37,155 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
     service, arm_config = load_arm_config(args.config)
     if args.enable_real_arm:
         arm_config = deepcopy(arm_config)
+        if args.enable_m8_init_recovery:
+            if not args.enable_m8_fixed_anchor or args.mapping_mode != "relative":
+                raise RuntimeError("M8 init recovery requires fixed-anchor relative mode")
+            if not (args.confirm_m8_init_recovery or bundled_confirmation):
+                raise RuntimeError("M8 init recovery requires --confirm-m8-init-recovery")
+            duration = float(args.m8_init_recovery_duration_sec)
+            if not isfinite(duration) or not 2.0 <= duration <= 15.0:
+                raise RuntimeError("M8 init recovery duration must be in [2, 15] seconds")
+            recovery = arm_config.setdefault("init_recovery", {})
+            recovery["duration_sec"] = duration
+            arm_targets = recovery.get("arms", {})
+            for side in ("left", "right"):
+                values = arm_targets.get(side)
+                if not isinstance(values, list) or len(values) != 7:
+                    raise RuntimeError(f"M8 init recovery requires 7 recorded joints for {side}")
+            arm_config.setdefault("safety", {})["init_recovery_enabled"] = True
+        workspace_limit = args.m8_workspace_limit_m
+        if workspace_limit is not None:
+            workspace_limit = float(workspace_limit)
+            if not isfinite(workspace_limit) or not 0.5 <= workspace_limit <= 2.0:
+                raise RuntimeError("M8 workspace limit must be finite and in [0.5, 2.0] m")
+            if not (args.confirm_m8_expanded_workspace or bundled_confirmation):
+                raise RuntimeError(
+                    "M8 expanded workspace requires --confirm-m8-expanded-workspace"
+                )
+            arms = arm_config.setdefault("arms", {})
+            arms.setdefault("left", {})["workspace_xyz_min"] = [0.0, 0.0, 0.0]
+            arms["left"]["workspace_xyz_max"] = [workspace_limit] * 3
+            arms.setdefault("right", {})["workspace_xyz_min"] = [0.0, -workspace_limit, 0.0]
+            arms["right"]["workspace_xyz_max"] = [workspace_limit, 0.0, workspace_limit]
+            arm_config.setdefault("safety", {})["expanded_workspace_limit_m"] = workspace_limit
         position_scale = float(args.m8_position_scale)
         if not isfinite(position_scale) or position_scale <= 0.0:
             raise RuntimeError("M8 position scale must be finite and positive")
         arm_config.setdefault("mapping", {})["position_scale_xyz"] = [position_scale] * 3
         safety = arm_config.setdefault("safety", {})
         requested_speed = float(args.m8_max_linear_speed_mps)
-        if not 0.0 < requested_speed <= 1.00:
-            raise RuntimeError("M8 max linear speed must be in (0, 1.0] m/s")
-        if requested_speed > 0.20 and not (args.confirm_m8_high_speed or bundled_confirmation):
+        if not 0.0 < requested_speed <= 2.00:
+            raise RuntimeError("M8 max linear speed must be in (0, 2.0] m/s")
+        if requested_speed > 1.00 and not (
+            args.confirm_m8_very_high_speed or bundled_confirmation
+        ):
+            raise RuntimeError("M8 speed above 1.00 m/s requires --confirm-m8-very-high-speed")
+        if 0.20 < requested_speed <= 1.00 and not (
+            args.confirm_m8_high_speed or bundled_confirmation
+        ):
             raise RuntimeError("M8 speed above 0.20 m/s requires --confirm-m8-high-speed")
         safety["max_linear_speed_mps"] = requested_speed
         safety["max_input_position_jump_m"] = 0.03
         safety["mode_switch_max_position_jump_m"] = 0.01
+        engage_stable_frames = int(args.m8_engage_stable_frames)
+        engage_timeout = float(args.m8_engage_timeout_sec)
+        engage_hold = float(args.m8_engage_hold_sec)
+        engage_soft_start = float(args.m8_engage_soft_start_sec)
+        if not 3 <= engage_stable_frames <= 120:
+            raise RuntimeError("M8 engage stable frames must be in [3, 120]")
+        if not isfinite(engage_timeout) or not 1.0 <= engage_timeout <= 30.0:
+            raise RuntimeError("M8 engage timeout must be in [1, 30] seconds")
+        if not isfinite(engage_hold) or not 0.0 <= engage_hold <= 2.0:
+            raise RuntimeError("M8 engage hold must be in [0, 2] seconds")
+        if not isfinite(engage_soft_start) or not 0.0 <= engage_soft_start <= 3.0:
+            raise RuntimeError("M8 engage soft start must be in [0, 3] seconds")
+        safety["engage_stable_frames"] = engage_stable_frames
+        safety["engage_timeout_sec"] = engage_timeout
+        safety["engage_hold_duration_sec"] = engage_hold
+        safety["engage_soft_start_duration_sec"] = engage_soft_start
         hand_reacquire_timeout = float(args.m8_hand_reacquire_timeout_sec)
         if not isfinite(hand_reacquire_timeout) or hand_reacquire_timeout < 0.0:
             raise RuntimeError("M8 hand reacquire timeout must be finite and non-negative")
         safety["hand_reacquire_timeout_sec"] = hand_reacquire_timeout
-        safety["hand_reacquire_stable_frames"] = 3
+        stable_frames = args.m8_hand_reacquire_stable_frames
+        if stable_frames is None:
+            stable_frames = 12 if args.enable_m8_fixed_anchor else 3
+        if int(stable_frames) < 1:
+            raise RuntimeError("M8 hand reacquire stable frames must be positive")
+        safety["hand_reacquire_stable_frames"] = int(stable_frames)
+        invalid_grace_frames = int(args.m8_arm_wrist_invalid_grace_frames)
+        if invalid_grace_frames < 0:
+            raise RuntimeError("M8 arm wrist invalid grace frames must be non-negative")
+        safety["hand_reacquire_invalid_grace_frames"] = invalid_grace_frames
+        if args.enable_m8_fixed_anchor:
+            if args.enable_m8_absolute_orientation_reacquire:
+                raise RuntimeError("fixed-anchor mode does not use absolute-orientation re-anchoring")
+            if args.mapping_mode != "relative":
+                raise RuntimeError("fixed-anchor mode requires --mapping-mode relative")
+            if not args.enable_m8_orientation:
+                raise RuntimeError("fixed-anchor mode requires --enable-m8-orientation")
+            if hand_reacquire_timeout <= 0.0:
+                raise RuntimeError("fixed-anchor mode requires a positive hand reacquire timeout")
+            anchor_recovery_speed = float(args.m8_anchor_reacquire_linear_speed_mps)
+            anchor_linear_accel = float(args.m8_anchor_reacquire_linear_accel_mps2)
+            anchor_angular_accel = float(args.m8_anchor_reacquire_angular_accel_rad_s2)
+            anchor_max_position = float(args.m8_anchor_reacquire_max_position_error_m)
+            anchor_recovery_angular_speed = float(args.m8_orientation_reacquire_speed_rad_s)
+            anchor_max_orientation = float(args.m8_orientation_reacquire_max_error_rad)
+            if not isfinite(anchor_recovery_speed) or anchor_recovery_speed <= 0.0:
+                raise RuntimeError("fixed-anchor reacquire linear speed must be finite and positive")
+            if not isfinite(anchor_linear_accel) or anchor_linear_accel <= 0.0:
+                raise RuntimeError("fixed-anchor reacquire linear acceleration must be finite and positive")
+            if not isfinite(anchor_angular_accel) or anchor_angular_accel <= 0.0:
+                raise RuntimeError("fixed-anchor reacquire angular acceleration must be finite and positive")
+            if not isfinite(anchor_max_position) or anchor_max_position <= 0.02:
+                raise RuntimeError("fixed-anchor max position error must exceed 0.02 m")
+            if not isfinite(anchor_recovery_angular_speed) or anchor_recovery_angular_speed <= 0.0:
+                raise RuntimeError("fixed-anchor reacquire angular speed must be finite and positive")
+            if not isfinite(anchor_max_orientation) or not 0.15 <= anchor_max_orientation <= 3.141592653589793:
+                raise RuntimeError("fixed-anchor max orientation error must be in [0.15, pi]")
+            safety["fixed_anchor_mode"] = True
+            safety["fixed_anchor_pose_reacquire"] = True
+            safety["absolute_reacquire_linear_speed_mps"] = anchor_recovery_speed
+            safety["pose_reacquire_linear_accel_mps2"] = anchor_linear_accel
+            safety["pose_reacquire_angular_accel_rad_s2"] = anchor_angular_accel
+            safety["absolute_reacquire_direct_position_error_m"] = 0.002
+            safety["absolute_reacquire_complete_position_error_m"] = 0.002
+            safety["absolute_reacquire_max_position_error_m"] = anchor_max_position
+            safety["orientation_reacquire_speed_rad_s"] = anchor_recovery_angular_speed
+            safety["orientation_reacquire_direct_error_rad"] = 0.02
+            safety["orientation_reacquire_complete_error_rad"] = 0.02
+            safety["orientation_reacquire_max_error_rad"] = anchor_max_orientation
+            safety["orientation_reacquire_complete_frames"] = 10
+        if args.enable_m8_full_absolute:
+            if args.mapping_mode != "absolute":
+                raise RuntimeError("full absolute mode requires --mapping-mode absolute")
+            if not args.enable_m8_orientation:
+                raise RuntimeError("full absolute mode requires --enable-m8-orientation")
+            if hand_reacquire_timeout <= 0.0:
+                raise RuntimeError("full absolute mode requires a positive hand reacquire timeout")
+            recovery_linear_speed = float(args.m8_absolute_reacquire_linear_speed_mps)
+            recovery_max_position = float(args.m8_absolute_reacquire_max_position_error_m)
+            if not isfinite(recovery_linear_speed) or recovery_linear_speed <= 0.0:
+                raise RuntimeError("absolute reacquire linear speed must be finite and positive")
+            if not isfinite(recovery_max_position) or recovery_max_position <= 0.02:
+                raise RuntimeError("absolute reacquire max position error must exceed 0.02 m")
+            recovery_angular_speed = float(args.m8_orientation_reacquire_speed_rad_s)
+            recovery_max_orientation = float(args.m8_orientation_reacquire_max_error_rad)
+            if not isfinite(recovery_angular_speed) or recovery_angular_speed <= 0.0:
+                raise RuntimeError("absolute reacquire angular speed must be finite and positive")
+            if not isfinite(recovery_max_orientation) or not 0.15 <= recovery_max_orientation <= 3.141592653589793:
+                raise RuntimeError("absolute reacquire max orientation error must be in [0.15, pi]")
+            safety["absolute_pose_reacquire"] = True
+            safety["absolute_reacquire_linear_speed_mps"] = recovery_linear_speed
+            safety["absolute_reacquire_direct_position_error_m"] = 0.02
+            safety["absolute_reacquire_complete_position_error_m"] = 0.01
+            safety["absolute_reacquire_max_position_error_m"] = recovery_max_position
+            safety["orientation_reacquire_speed_rad_s"] = recovery_angular_speed
+            safety["orientation_reacquire_direct_error_rad"] = 0.15
+            safety["orientation_reacquire_complete_error_rad"] = 0.087
+            safety["orientation_reacquire_max_error_rad"] = recovery_max_orientation
+            safety["orientation_reacquire_complete_frames"] = 5
         if args.enable_m8_absolute_orientation_reacquire:
             if not args.enable_m8_orientation:
                 raise RuntimeError("absolute orientation reacquire requires --enable-m8-orientation")
@@ -76,6 +207,23 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
         if not 0.0 < position_alpha <= 1.0:
             raise RuntimeError("M8 position alpha must be in (0, 1]")
         arm_config.setdefault("filter", {})["position_alpha"] = position_alpha
+        orientation_alpha = float(args.m8_orientation_alpha)
+        if not 0.0 < orientation_alpha <= 1.0:
+            raise RuntimeError("M8 orientation alpha must be in (0, 1]")
+        arm_config["filter"]["orientation_alpha"] = orientation_alpha
+        position_lead_sec = float(args.m8_position_lead_sec)
+        max_position_lead = float(args.m8_max_position_lead_m)
+        if not 0.0 <= position_lead_sec <= 0.10:
+            raise RuntimeError("M8 position lead must be in [0, 0.10] s")
+        if not 0.0 <= max_position_lead <= 0.10:
+            raise RuntimeError("M8 maximum position lead must be in [0, 0.10] m")
+        if position_lead_sec > 0.0:
+            if max_position_lead <= 0.0:
+                raise RuntimeError("positive M8 position lead requires --m8-max-position-lead-m")
+            if not (args.confirm_m8_position_lead or bundled_confirmation):
+                raise RuntimeError("M8 position lead requires --confirm-m8-position-lead")
+        arm_config["filter"]["position_lead_sec"] = position_lead_sec
+        arm_config["filter"]["max_position_lead_m"] = max_position_lead
         if args.enable_m8_orientation:
             if not (args.confirm_m8_orientation or bundled_confirmation):
                 raise RuntimeError("M8 orientation requires --confirm-m8-orientation")
@@ -87,6 +235,8 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
                 raise RuntimeError("M8 max angular speed must be finite and positive")
             if args.enable_m8_absolute_orientation_reacquire and rotation_scale != 1.0:
                 raise RuntimeError("absolute orientation reacquire requires --m8-rotation-scale 1.0")
+            if args.enable_m8_fixed_anchor and rotation_scale != 1.0:
+                raise RuntimeError("fixed-anchor mode requires --m8-rotation-scale 1.0")
             if (rotation_scale > 0.30 or angular_speed > 0.30) and not (
                 args.confirm_m8_high_rate_orientation or bundled_confirmation
             ):
@@ -115,9 +265,8 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
                 raise RuntimeError("M8 waiver does not authorize bundled confirmation")
         else:
             expected_arm_phrase = (
-                "M8 BOTH ARMS RELATIVE PHYSICAL ESTOP"
-                if args.arm == "both"
-                else "M8 LEFT RELATIVE PHYSICAL ESTOP"
+                f"M8 {'BOTH ARMS' if args.arm == 'both' else 'LEFT'} "
+                f"{selected_mode.upper()} PHYSICAL ESTOP"
             )
             phrase = input(f"Type exactly: {expected_arm_phrase}\n> ").strip()
             if phrase != expected_arm_phrase:
@@ -128,9 +277,13 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
                     raise RuntimeError("M8 control-rights takeover confirmation did not match")
             if float(args.m8_max_linear_speed_mps) > 0.20:
                 expected_speed_phrase = (
-                    "M8 HIGH SPEED 1.0 MPS PHYSICAL ESTOP"
-                    if float(args.m8_max_linear_speed_mps) > 0.50
-                    else "M8 HIGH SPEED 0.5 MPS PHYSICAL ESTOP"
+                    "M8 VERY HIGH SPEED 2.0 MPS PHYSICAL ESTOP"
+                    if float(args.m8_max_linear_speed_mps) > 1.00
+                    else (
+                        "M8 HIGH SPEED 1.0 MPS PHYSICAL ESTOP"
+                        if float(args.m8_max_linear_speed_mps) > 0.50
+                        else "M8 HIGH SPEED 0.5 MPS PHYSICAL ESTOP"
+                    )
                 )
                 speed_phrase = input(f"Type exactly: {expected_speed_phrase}\n> ").strip()
                 if speed_phrase != expected_speed_phrase:
@@ -143,6 +296,24 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
                     high_rate_phrase = input("Type exactly: M8 HIGH RATE ORIENTATION PHYSICAL ESTOP\n> ").strip()
                     if high_rate_phrase != "M8 HIGH RATE ORIENTATION PHYSICAL ESTOP":
                         raise RuntimeError("M8 high-rate orientation confirmation did not match")
+            if args.m8_workspace_limit_m is not None:
+                workspace_phrase = input(
+                    "Type exactly: M8 EXPANDED WORKSPACE PHYSICAL ESTOP\n> "
+                ).strip()
+                if workspace_phrase != "M8 EXPANDED WORKSPACE PHYSICAL ESTOP":
+                    raise RuntimeError("M8 expanded-workspace confirmation did not match")
+            if float(args.m8_position_lead_sec) > 0.0:
+                lead_phrase = input(
+                    "Type exactly: M8 POSITION LEAD PHYSICAL ESTOP\n> "
+                ).strip()
+                if lead_phrase != "M8 POSITION LEAD PHYSICAL ESTOP":
+                    raise RuntimeError("M8 position-lead confirmation did not match")
+            if args.enable_m8_init_recovery:
+                init_phrase = input(
+                    "Type exactly: M8 INIT JOINT RECOVERY PHYSICAL ESTOP\n> "
+                ).strip()
+                if init_phrase != "M8 INIT JOINT RECOVERY PHYSICAL ESTOP":
+                    raise RuntimeError("M8 init-recovery confirmation did not match")
     return ControlPCSupervisor(
         arm_config,
         arm=args.arm,
@@ -152,6 +323,7 @@ def build_supervisor(args: argparse.Namespace) -> ControlPCSupervisor:
         sdk_root=service.get("arms", {}).get("sdk_root", "/home/zxc/cenyj/astribot_sdk/astribot_sdk_ros2-master"),
         high_control_rights=args.allow_control_takeover,
         allow_orientation_control=args.enable_m8_orientation,
+        allow_real_absolute=args.enable_m8_full_absolute,
     )
 
 
@@ -225,7 +397,8 @@ async def command_console(supervisor: ControlPCSupervisor) -> None:
             return
         try:
             name, argument = parse_control_command(line)
-            result = await asyncio.to_thread(supervisor.execute_command, name, argument, 2.0)
+            timeout = 20.0 if name == "recover-init" else 2.0
+            result = await asyncio.to_thread(supervisor.execute_command, name, argument, timeout)
             print(("OK: " if result.accepted else "REJECTED: ") + result.message, flush=True)
         except Exception as exc:
             print(f"ERROR: {exc}", flush=True)
@@ -277,6 +450,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-control-takeover", action="store_true")
     parser.add_argument("--m8-max-linear-speed-mps", type=float, default=0.20)
     parser.add_argument("--confirm-m8-high-speed", action="store_true")
+    parser.add_argument("--confirm-m8-very-high-speed", action="store_true")
     parser.add_argument(
         "--m8-position-scale",
         type=float,
@@ -289,10 +463,60 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0.0,
         help="hold and automatically re-anchor hand tracking if it returns within this many seconds; 0 disables",
     )
+    parser.add_argument(
+        "--m8-hand-reacquire-stable-frames",
+        type=int,
+        default=None,
+        help="consecutive valid tracking frames required before recovery; fixed-anchor default is 12",
+    )
+    parser.add_argument(
+        "--m8-arm-wrist-invalid-grace-frames",
+        type=int,
+        default=2,
+        help="brief invalid wrist frames tolerated during catch-up before restarting recovery",
+    )
+    parser.add_argument("--m8-engage-stable-frames", type=int, default=12)
+    parser.add_argument("--m8-engage-timeout-sec", type=float, default=5.0)
+    parser.add_argument("--m8-engage-hold-sec", type=float, default=0.25)
+    parser.add_argument("--m8-engage-soft-start-sec", type=float, default=0.50)
     parser.add_argument("--enable-m8-absolute-orientation-reacquire", action="store_true")
+    parser.add_argument("--enable-m8-full-absolute", action="store_true")
+    parser.add_argument("--enable-m8-fixed-anchor", action="store_true")
+    parser.add_argument("--enable-m8-init-recovery", action="store_true")
+    parser.add_argument("--confirm-m8-init-recovery", action="store_true")
+    parser.add_argument("--m8-init-recovery-duration-sec", type=float, default=4.0)
+    parser.add_argument("--m8-anchor-reacquire-linear-speed-mps", type=float, default=0.10)
+    parser.add_argument("--m8-anchor-reacquire-linear-accel-mps2", type=float, default=0.30)
+    parser.add_argument("--m8-anchor-reacquire-angular-accel-rad-s2", type=float, default=1.50)
+    parser.add_argument("--m8-anchor-reacquire-max-position-error-m", type=float, default=0.20)
+    parser.add_argument("--m8-absolute-reacquire-linear-speed-mps", type=float, default=0.10)
+    parser.add_argument("--m8-absolute-reacquire-max-position-error-m", type=float, default=0.20)
     parser.add_argument("--m8-orientation-reacquire-speed-rad-s", type=float, default=0.5)
     parser.add_argument("--m8-orientation-reacquire-max-error-rad", type=float, default=1.57)
     parser.add_argument("--m8-position-alpha", type=float, default=0.70)
+    parser.add_argument(
+        "--m8-orientation-alpha",
+        type=float,
+        default=1.0,
+        help="arm orientation low-pass weight in (0, 1]; 1 disables application-side smoothing",
+    )
+    parser.add_argument(
+        "--m8-position-lead-sec",
+        type=float,
+        default=0.0,
+        help="bounded Cartesian velocity prediction horizon; use instead of alpha above 1",
+    )
+    parser.add_argument("--m8-max-position-lead-m", type=float, default=0.0)
+    parser.add_argument("--confirm-m8-position-lead", action="store_true")
+    parser.add_argument(
+        "--m8-workspace-limit-m",
+        type=float,
+        default=None,
+        help=(
+            "expand the arm workspace up to 2 m while preserving z>=0 and left/right midline separation"
+        ),
+    )
+    parser.add_argument("--confirm-m8-expanded-workspace", action="store_true")
     parser.add_argument("--enable-m8-orientation", action="store_true")
     parser.add_argument("--confirm-m8-orientation", action="store_true")
     parser.add_argument("--confirm-m8-high-rate-orientation", action="store_true")

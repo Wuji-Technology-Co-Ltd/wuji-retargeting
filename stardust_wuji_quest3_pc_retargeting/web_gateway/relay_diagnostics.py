@@ -50,6 +50,8 @@ def _emit_xr_debug(payload: dict[str, Any], emit: Callable[[str], None]) -> None
         "input_sources",
         "left_valid",
         "right_valid",
+        "left_arm_wrist_valid",
+        "right_arm_wrist_valid",
         "error",
     ):
         if key in payload:

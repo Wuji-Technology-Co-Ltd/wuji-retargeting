@@ -49,12 +49,19 @@ def test_webxr_prefers_passthrough_ar_before_opaque_vr():
     root = Path(__file__).resolve().parents[1] / "quest3_web"
     webxr = (root / "src" / "webxr_session.js").read_text(encoding="utf-8")
 
-    ar_mode = webxr.index('"immersive-ar"')
-    vr_mode = webxr.index('"immersive-vr"')
-
-    assert ar_mode < vr_mode
+    assert ': ["immersive-ar", "immersive-vr"]' in webxr
     assert "isSessionSupported(mode)" in webxr
     assert "requestSession(mode" in webxr
+
+
+def test_webxr_allows_explicit_vr_mode_for_quest_hand_tracking():
+    root = Path(__file__).resolve().parents[1] / "quest3_web"
+    webxr = (root / "src" / "webxr_session.js").read_text(encoding="utf-8")
+
+    assert 'get("xr")' in webxr
+    assert 'requestedXrMode === "vr"' in webxr
+    assert '["immersive-vr"]' in webxr
+    assert "running ${state.xrSessionMode}" in webxr
 
 
 def test_webxr_uses_transparent_ar_layer_and_visible_vr_backdrop():
@@ -101,6 +108,18 @@ def test_webxr_emits_xr_debug_for_session_and_frame_boundaries():
         assert f'sendDebug("{stage}"' in webxr
 
 
+def test_webxr_keeps_full_hand_and_arm_wrist_validity_independent():
+    root = Path(__file__).resolve().parents[1] / "quest3_web"
+    serializer = (root / "src" / "hand_frame_serializer.js").read_text(encoding="utf-8")
+    webxr = (root / "src" / "webxr_session.js").read_text(encoding="utf-8")
+
+    assert "export function serializeArmWrist" in serializer
+    assert 'inputSource.hand.get("wrist")' in serializer
+    assert "if (!pose) return emptyHand();" in serializer
+    assert "arm_wrists: { left: leftArmWrist, right: rightArmWrist }" in webxr
+    assert "left_arm_wrist_valid" in webxr
+
+
 def test_webxr_tracks_reference_space_reset_revision():
     root = Path(__file__).resolve().parents[1] / "quest3_web"
     webxr = (root / "src" / "webxr_session.js").read_text(encoding="utf-8")
@@ -109,6 +128,8 @@ def test_webxr_tracks_reference_space_reset_revision():
     assert "referenceSpaceRevision += 1" in webxr
     assert "reference_space_revision: state.referenceSpaceRevision" in webxr
     assert "sendInactiveTrackingFrame();" in webxr
+    assert 'setStatus("reference"' in webxr
+    assert "referenceSpaceStatus" in (root / "index.html").read_text(encoding="utf-8")
 
 
 def test_relay_diagnostics_do_not_count_debug_or_hello_as_tracking_frames():

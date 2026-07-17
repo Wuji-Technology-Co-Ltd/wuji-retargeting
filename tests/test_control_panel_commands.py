@@ -25,19 +25,18 @@ class FakeRoot:
 
 
 def test_cli_supports_arm_mapping_and_all_required_commands():
-    args = parse_args(["--arm", "right", "--mapping-mode", "absolute", "--command", "absolute-calibrate"])
+    args = parse_args(["--arm", "right", "--mapping-mode", "absolute", "--command", "engage"])
     assert args.arm == "right"
     assert args.mapping_mode == "absolute"
     for command in [
-        "absolute-calibrate",
         "invalidate-calibration",
         "calibration-status",
-        "start",
         "pause",
         "stop",
         "estop",
-        "recenter",
         "engage",
+        "clutch-resume",
+        "recover-init",
         "mode relative",
         "mode absolute",
     ]:
@@ -45,6 +44,34 @@ def test_cli_supports_arm_mapping_and_all_required_commands():
         assert name
         if command.startswith("mode"):
             assert argument in {"relative", "absolute"}
+
+
+def test_short_console_aliases_map_to_engage_and_pause():
+    assert parse_control_command("E") == ("engage", None)
+    assert parse_control_command("e") == ("engage", None)
+    assert parse_control_command("P") == ("pause", None)
+    assert parse_control_command("p") == ("pause", None)
+    assert parse_control_command("R") == ("recover-init", None)
+    assert parse_control_command("r") == ("recover-init", None)
+    assert parse_control_command("S") == ("status", None)
+    assert parse_control_command("s") == ("status", None)
+
+    queue = ControlCommandQueue()
+    assert queue.submit("E").name == "engage"
+    assert queue.submit("p").name == "pause"
+    assert queue.submit("R").name == "recover-init"
+    assert queue.submit("s").name == "status"
+    assert parse_control_command("status") == ("status", None)
+
+
+def test_separate_operator_calibration_commands_are_not_exposed():
+    for command in ("absolute-calibrate", "recenter", "calibrate", "anchor-calibrate", "anchor-engage", "clutch-position", "start"):
+        try:
+            parse_control_command(command)
+        except ValueError as exc:
+            assert "unknown control command" in str(exc)
+        else:
+            raise AssertionError(f"{command} should not remain an operator command")
 
 
 def test_panel_buttons_only_submit_shared_supervisor_commands():
@@ -56,9 +83,9 @@ def test_panel_buttons_only_submit_shared_supervisor_commands():
     for label in BUTTON_COMMANDS:
         panel.invoke_button(label)
 
-    assert ("recenter", None) in supervisor.commands
-    assert ("absolute-calibrate", None) in supervisor.commands
-    assert ("start", None) in supervisor.commands
+    assert ("engage", None) in supervisor.commands
+    assert ("pause", None) in supervisor.commands
+    assert ("recover-init", None) in supervisor.commands
     assert ("estop", None) in supervisor.commands
 
 

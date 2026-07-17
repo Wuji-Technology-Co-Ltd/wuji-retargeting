@@ -1,6 +1,6 @@
-import { connectWebSocket } from "./websocket_client.js?v=20260707-ar1";
-import { enterXr } from "./webxr_session.js?v=20260707-ar1";
-import { setError } from "./status_panel.js?v=20260707-ar1";
+import { connectWebSocket } from "./websocket_client.js?v=20260716-wrist1";
+import { enterXr } from "./webxr_session.js?v=20260716-wrist1";
+import { setError } from "./status_panel.js?v=20260716-wrist1";
 
 document.getElementById("connectButton").addEventListener("click", connectWebSocket);
 document.getElementById("enterXrButton").addEventListener("click", () => {

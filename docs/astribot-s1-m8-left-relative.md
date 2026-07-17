@@ -91,8 +91,8 @@ teleop> engage
 
 `engage` rereads the current robot desired pose, recenters, resets filters, and
 enters RUNNING in one control-thread operation. This avoids the hand-motion gap
-between separate `recenter` and `start` commands. The separate commands remain
-available for diagnostics.
+between separate calibration and start commands. Those separate operator
+calibration commands are no longer exposed.
 For the first dual-arm run, keep both wrists stationary during `engage`. Move
 only the left wrist by 0.005 m, then `pause`; repeat with only the right wrist,
 then test simultaneous motion. With position scale 1.5, a 0.01 m Quest wrist

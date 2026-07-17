@@ -3,6 +3,15 @@ control_way: filter
 use_wbc: false
 add_default_torso: false
 
+init_recovery:
+  source: /home/zxc/cenyj/astribot_sdk/astribot_sdk_ros2-master/init_joints.md
+  section: desired
+  duration_sec: 4.0
+  joint_tolerance_rad: 0.10
+  arms:
+    left: [0.159258, -0.0217864, -1.42076, 1.65681, -0.347972, 0.112456, 0.126563]
+    right: [-0.164673, -0.0218748, 1.41752, 1.65603, 0.34339, 0.112533, -0.123686]
+
 whole_body:
   enabled: false
   allow_torso: false
@@ -54,6 +63,14 @@ safety:
   maximum_dt_sec: 0.050
   sdk_block_fault_sec: 0.050
   consecutive_deadline_fault_count: 3
+  engage_stable_frames: 12
+  engage_timeout_sec: 5.0
+  engage_hmd_position_stability_m: 0.010
+  engage_hmd_yaw_stability_rad: 0.030
+  engage_wrist_position_stability_m: 0.005
+  engage_wrist_rotation_stability_rad: 0.050
+  engage_hold_duration_sec: 0.25
+  engage_soft_start_duration_sec: 0.50
 
 arms:
   left:

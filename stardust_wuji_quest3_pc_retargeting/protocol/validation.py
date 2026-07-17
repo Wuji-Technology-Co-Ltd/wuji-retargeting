@@ -91,6 +91,25 @@ def validate_tracking_frame(payload: Any) -> TrackingFrame:
         raise ProtocolError("seq must be a non-negative integer")
     hands_data = _require_mapping(data.get("hands"), "hands")
     hands = {side: validate_hand(hands_data.get(side), side) for side in ("left", "right")}
+    arm_wrists_data = data.get("arm_wrists")
+    if arm_wrists_data is None:
+        arm_wrists = {}
+        for side, hand in hands.items():
+            if hand.valid and "wrist" in hand.joint_names:
+                wrist_index = hand.joint_names.index("wrist")
+                arm_wrists[side] = PoseFrame(
+                    valid=True,
+                    position=list(hand.positions[wrist_index]),
+                    orientation_xyzw=list(hand.orientations_xyzw[wrist_index]),
+                )
+            else:
+                arm_wrists[side] = PoseFrame(False, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    else:
+        arm_wrists_mapping = _require_mapping(arm_wrists_data, "arm_wrists")
+        arm_wrists = {
+            side: validate_pose(arm_wrists_mapping.get(side), f"arm_wrists.{side}")
+            for side in ("left", "right")
+        }
     session_data = _require_mapping(data.get("session"), "session")
     visibility = session_data.get("visibility", "visible")
     reference_space = session_data.get("reference_space", "local-floor")
@@ -108,6 +127,7 @@ def validate_tracking_frame(payload: Any) -> TrackingFrame:
         xr_session_id=xr_session_id,
         hmd=validate_pose(data.get("hmd"), "hmd"),
         hands=hands,
+        arm_wrists=arm_wrists,
         session=SessionFrame(
             active=_require_bool(session_data.get("active"), "session.active"),
             visibility=visibility,

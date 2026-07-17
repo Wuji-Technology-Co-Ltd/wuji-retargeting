@@ -153,3 +153,35 @@ def test_takeover_verification_ignores_prior_owner_service_client(monkeypatch):
 def test_default_arm_adapter_forbids_implicit_torso_commanding():
     with pytest.raises(ValueError, match="default torso is forbidden"):
         AstribotAdapter(enable_real=True, add_default_torso=True)
+
+
+def test_real_adapter_init_recovery_moves_only_both_arm_joint_groups_and_checks_settle():
+    robot = Mock()
+    robot.arm_left_name = "left-sdk"
+    robot.arm_right_name = "right-sdk"
+    robot.chassis_frame_name = "base-sdk"
+    robot.get_control_rights_status.return_value = True
+    robot.astribot_interface.is_alive.return_value = True
+    robot.astribot_interface.get_robot_mode.return_value = "safe"
+    robot.get_joints_position_limit.return_value = ([[-3.0] * 7, [-3.0] * 7], [[3.0] * 7, [3.0] * 7])
+    left = [0.1] * 7
+    right = [-0.1] * 7
+    robot.get_current_joints_position.return_value = [left, right]
+    robot.move_joints_position.return_value = True
+    adapter = AstribotAdapter(enable_real=True, robot_factory=Mock(return_value=robot))
+    adapter.initialize()
+
+    result = adapter.move_arms_to_joint_positions(
+        {"left": left, "right": right},
+        duration_sec=4.0,
+        tolerance_rad=0.1,
+    )
+
+    robot.move_joints_position.assert_called_once_with(
+        ["left-sdk", "right-sdk"],
+        [left, right],
+        duration=4.0,
+        add_default_torso=False,
+    )
+    assert result == {"left": left, "right": right}
+    assert adapter.stats.init_recovery_calls == 1

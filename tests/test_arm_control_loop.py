@@ -6,7 +6,12 @@ from stardust_wuji_quest3_pc_retargeting.arm_control.arm_mapper import ArmTarget
 from stardust_wuji_quest3_pc_retargeting.arm_control.arm_mapper import ArmMapper
 from stardust_wuji_quest3_pc_retargeting.arm_control.absolute_session_calibration import AbsoluteCalibrationConfig, AbsoluteSessionCalibrator, CalibrationState
 from stardust_wuji_quest3_pc_retargeting.protocol.validation import validate_tracking_frame
-from stardust_wuji_quest3_pc_retargeting.runtime.arm_control_loop import ArmControlLoop, ArmFrameProcessor, LoopState
+from stardust_wuji_quest3_pc_retargeting.runtime.arm_control_loop import (
+    ArmControlLoop,
+    ArmFrameProcessor,
+    LoopState,
+    PauseControl,
+)
 from stardust_wuji_quest3_pc_retargeting.runtime.latest_tracking import LatestTrackingBuffer
 from stardust_wuji_quest3_pc_retargeting.safety.arm_safety_filter import ArmSafetyFilter
 
@@ -184,11 +189,11 @@ def test_invalid_frame_processor_fails_closed_without_sending_candidate():
     assert "XR session inactive" in loop.fault_reason
 
 
-def tracking_frame(*, seq=1, left_valid=True, active=True, hmd_valid=True):
+def tracking_frame(*, seq=1, left_valid=True, active=True, hmd_valid=True, left_position=(0, 0, 0)):
     hand = {
         "valid": left_valid,
         "joint_names": ["wrist"] if left_valid else [],
-        "positions": [[0, 0, 0]] if left_valid else [],
+        "positions": [list(left_position)] if left_valid else [],
         "orientations_xyzw": [[0, 0, 0, 1]] if left_valid else [],
     }
     invalid_hand = {"valid": False, "joint_names": [], "positions": [], "orientations_xyzw": []}
@@ -199,6 +204,57 @@ def tracking_frame(*, seq=1, left_valid=True, active=True, hmd_valid=True):
         "hands": {"left": hand, "right": invalid_hand},
         "session": {"active": active, "reference_space": "local-floor", "reference_space_revision": 0},
     })
+
+
+def test_fixed_anchor_reacquire_first_step_is_acceleration_limited():
+    adapter = Adapter()
+    mapper = ArmMapper(position_scale_xyz=(1.0, 1.0, 1.0), enable_orientation=True)
+    desired = adapter.get_desired_poses()["left"]
+    mapper.engage("left", ArmTarget([0, 0, 0], [0, 0, 0, 1]), desired)
+    processor = ArmFrameProcessor(
+        mapper,
+        {
+            "left": ArmSafetyFilter(
+                max_linear_speed_mps=10.0,
+                max_angular_speed_rad_s=10.0,
+                max_input_position_jump_m=10.0,
+            )
+        },
+        ["left"],
+        adapter=adapter,
+        hand_reacquire_timeout_sec=5.0,
+        hand_reacquire_stable_frames=1,
+        fixed_anchor_pose_reacquire=True,
+        absolute_reacquire_linear_speed_mps=0.10,
+        absolute_reacquire_direct_position_error_m=0.002,
+        absolute_reacquire_complete_position_error_m=0.002,
+        absolute_reacquire_max_position_error_m=0.20,
+        orientation_reacquire_direct_error_rad=0.02,
+        orientation_reacquire_complete_error_rad=0.02,
+        pose_reacquire_linear_accel_mps2=0.30,
+        pose_reacquire_angular_accel_rad_s2=1.50,
+    )
+    valid = tracking_frame(seq=1)
+    processor.set_orientation_reference_context(valid)
+
+    with pytest.raises(PauseControl):
+        processor(tracking_frame(seq=2, left_valid=False), 0.01, 1_010_000_000)
+    targets = processor(
+        tracking_frame(seq=3, left_position=(0.10, 0, 0)),
+        0.01,
+        1_020_000_000,
+    )
+
+    assert targets is not None
+    first_step = targets["left"].position_array() - desired.position_array()
+    assert float((first_step @ first_step) ** 0.5) == pytest.approx(0.00003, abs=1e-8)
+    assert processor.tracking_reacquire_status(1_020_000_000)["state"] == "FIXED_ANCHOR_CATCHUP"
+
+    with pytest.raises(PauseControl):
+        processor(tracking_frame(seq=4, left_valid=False), 0.01, 1_030_000_000)
+    status = processor.tracking_reacquire_status(1_030_000_000)
+    assert status["state"] == "FIXED_ANCHOR_CATCHUP"
+    assert status["catchup_interruptions"] == 0
 
 
 def test_integrated_processor_holds_lost_hand_and_pauses_inactive_session():

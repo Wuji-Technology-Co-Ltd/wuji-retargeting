@@ -36,6 +36,22 @@ def test_relative_axis_transform_and_per_axis_scale():
     np.testing.assert_allclose(mapped.position, [-0.5, 1.75, 7.0])
 
 
+def test_relative_operator_yaw_reorients_hand_deltas_without_moving_anchor():
+    mapper = ArmMapper(
+        position_scale_xyz=[1.0, 1.0, 1.0],
+        robot_from_vr_axes=np.eye(3),
+    )
+    mapper.set_relative_operator_yaw(np.pi / 2.0)
+    mapper.engage("left", target([0, 0, 0]), target([0.4, 0.2, 0.8]))
+
+    neutral = mapper.map_hand("left", target([0, 0, 0]))
+    moved = mapper.map_hand("left", target([0.1, 0, 0]))
+
+    np.testing.assert_allclose(neutral.position, [0.4, 0.2, 0.8], atol=1e-9)
+    np.testing.assert_allclose(moved.position, [0.4, 0.2, 0.9], atol=1e-9)
+    assert mapper.relative_operator_yaw_rad == pytest.approx(np.pi / 2.0)
+
+
 def test_relative_rotation_scale_is_applied_and_q_sign_is_continuous():
     mapper = ArmMapper(rotation_scale=0.5, enable_orientation=True)
     mapper.engage("left", target([0, 0, 0]), target([0, 0, 0]))

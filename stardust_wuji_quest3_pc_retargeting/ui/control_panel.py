@@ -8,11 +8,10 @@ if TYPE_CHECKING:
 
 
 BUTTON_COMMANDS = {
-    "Relative Recenter": ("mode", "relative", "recenter", None),
-    "Absolute 标定": ("absolute-calibrate", None),
+    "Engage (E)": ("engage", None),
     "Cancel Calibration": ("cancel-calibration", None),
-    "Start": ("start", None),
-    "Pause": ("pause", None),
+    "Pause (P)": ("pause", None),
+    "Recover Init (R)": ("recover-init", None),
     "Stop": ("stop", None),
     "E-Stop": ("estop", None),
 }

@@ -12,6 +12,7 @@ from stardust_wuji_quest3_pc_retargeting.conversion.pose_math import (
     matrix_to_quat_xyzw,
     normalize_quat_xyzw,
     quat_angle_xyzw,
+    quat_from_yaw_y_up,
     quat_inverse_xyzw,
     quat_multiply_xyzw,
     quat_to_matrix_xyzw,
@@ -86,6 +87,8 @@ class ArmMapper:
             raise ValueError("rotation_scale must be between 0 and 1")
         self.robot_from_vr_axes = validate_rotation_matrix(np.eye(3) if robot_from_vr_axes is None else robot_from_vr_axes)
         self._robot_from_vr_quat = matrix_to_quat_xyzw(self.robot_from_vr_axes)
+        self._relative_robot_from_vr_axes = self.robot_from_vr_axes.copy()
+        self._relative_operator_yaw_rad = 0.0
         self.enable_orientation = bool(enable_orientation)
         self.mode = MappingMode(mapping_mode)
         self._relative: dict[str, _RelativeAnchor] = {}
@@ -98,6 +101,21 @@ class ArmMapper:
         self._validate_target(robot_pose)
         self._relative[side] = _RelativeAnchor(robot=self._copy_target(robot_pose), webxr=self._copy_target(vr_pose))
         self._last_orientation[side] = robot_pose.orientation_array()
+
+    def set_relative_operator_yaw(self, yaw_rad: float) -> None:
+        yaw = float(yaw_rad)
+        if not np.isfinite(yaw):
+            raise ValueError("relative operator yaw must be finite")
+        operator_from_local = quat_to_matrix_xyzw(quat_from_yaw_y_up(yaw)).T
+        self._relative_robot_from_vr_axes = validate_rotation_matrix(
+            self.robot_from_vr_axes @ operator_from_local
+        )
+        self._relative_operator_yaw_rad = yaw
+        self._last_orientation.clear()
+
+    @property
+    def relative_operator_yaw_rad(self) -> float:
+        return float(self._relative_operator_yaw_rad)
 
     def calibrate(self, side: str, robot_target: ArmTarget, webxr_target: ArmTarget) -> None:
         self.engage(side, webxr_target, robot_target)
@@ -237,12 +255,13 @@ class ArmMapper:
             raise RuntimeError(f"{side} arm is not engaged")
         anchor = self._relative[side]
         delta_vr = current.position_array() - anchor.webxr.position_array()
-        delta_robot = self.robot_from_vr_axes @ delta_vr
+        relative_axes = self._relative_robot_from_vr_axes
+        delta_robot = relative_axes @ delta_vr
         position = anchor.robot.position_array() + self.position_scale_xyz * delta_robot
         orientation = anchor.robot.orientation_array()
         if self.enable_orientation:
             delta_vr_orientation = quat_multiply_xyzw(current.orientation_array(), quat_inverse_xyzw(anchor.webxr.orientation_array()))
-            delta_robot_matrix = self.robot_from_vr_axes @ quat_to_matrix_xyzw(delta_vr_orientation) @ self.robot_from_vr_axes.T
+            delta_robot_matrix = relative_axes @ quat_to_matrix_xyzw(delta_vr_orientation) @ relative_axes.T
             scaled_delta = scale_quat_rotation_xyzw(matrix_to_quat_xyzw(delta_robot_matrix), self.rotation_scale)
             orientation = quat_multiply_xyzw(scaled_delta, orientation)
         return ArmTarget(position.tolist(), orientation.tolist())

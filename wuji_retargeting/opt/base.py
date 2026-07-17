@@ -192,7 +192,7 @@ class BaseOptimizer(ABC):
         self.norm_delta = retarget_config.get('norm_delta', 0.04)
 
         # Load URDF
-        urdf_path = str((_PACKAGE_ROOT / f"wuji-description/hand/body/urdf/{self.hand_side}.urdf").resolve())
+        urdf_path = str((_PACKAGE_ROOT / f"wuji_hand_description/urdf/{self.hand_side}.urdf").resolve())
         self.robot = RobotWrapper(urdf_path, hand_side=self.hand_side)
         self.num_joints = self.robot.model.nq
 

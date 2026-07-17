@@ -56,3 +56,22 @@ def test_discontinuity_and_excessive_dt_fail_closed():
 
     assert jump.enabled is False and "jump" in jump.reason
     assert timing.state is ArmSafetyState.FAULT and "control dt" in timing.reason
+
+
+def test_bounded_position_lead_predicts_velocity_without_changing_alpha_semantics():
+    filt = ArmSafetyFilter(
+        max_linear_speed_mps=10.0,
+        max_input_position_jump_m=10.0,
+        position_alpha=1.0,
+        position_lead_sec=0.05,
+        max_position_lead_m=0.05,
+    )
+    filt.filter(target([0, 0, 0]), valid=True, running=True, dt_sec=0.01)
+    predicted = filt.filter(target([0.01, 0, 0]), valid=True, running=True, dt_sec=0.01)
+
+    assert predicted.target.position[0] == pytest.approx(0.06)
+
+
+def test_alpha_above_one_remains_rejected_as_oscillatory_gain():
+    with pytest.raises(ValueError, match=r"\(0, 1\]"):
+        ArmSafetyFilter(position_alpha=1.01)

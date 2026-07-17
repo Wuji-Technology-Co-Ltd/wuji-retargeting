@@ -15,6 +15,7 @@ class AdapterStats:
     send_calls: int = 0
     desired_read_calls: int = 0
     current_read_calls: int = 0
+    init_recovery_calls: int = 0
 
 
 @dataclass
@@ -152,6 +153,67 @@ class AstribotAdapter:
             use_wbc=False,
             add_default_torso=self.add_default_torso,
         )
+
+    def move_arms_to_joint_positions(
+        self,
+        targets: Mapping[str, list[float]],
+        *,
+        duration_sec: float,
+        tolerance_rad: float,
+    ) -> dict[str, list[float]]:
+        self._require_initialized()
+        duration = float(duration_sec)
+        tolerance = float(tolerance_rad)
+        if not 2.0 <= duration <= 15.0:
+            raise ValueError("init recovery duration must be in [2, 15] seconds")
+        if not 0.0 < tolerance <= 0.25:
+            raise ValueError("init recovery joint tolerance must be in (0, 0.25] rad")
+        sides = [side for side in ("left", "right") if side in targets]
+        if not sides:
+            raise ValueError("init recovery requires at least one arm target")
+        commands = []
+        for side in sides:
+            values = [float(value) for value in targets[side]]
+            if len(values) != 7:
+                raise ValueError(f"{side} init recovery target must contain 7 joints")
+            commands.append(values)
+        names = [self._names[side] for side in sides]
+        self.stats.init_recovery_calls += 1
+        if not self.enable_real:
+            return {side: list(command) for side, command in zip(sides, commands)}
+        self._require_real_safety(full_check=False)
+        lower, upper = self._robot.get_joints_position_limit(names)
+        for side, command, low, high in zip(sides, commands, lower, upper):
+            if len(low) != 7 or len(high) != 7:
+                raise RuntimeError(f"{side} SDK joint-limit response must contain 7 joints")
+            for index, value in enumerate(command):
+                if value < float(low[index]) - 1e-6 or value > float(high[index]) + 1e-6:
+                    raise RuntimeError(
+                        f"{side} init joint {index}={value:.6f} exceeds "
+                        f"[{float(low[index]):.6f}, {float(high[index]):.6f}]"
+                    )
+        result = self._robot.move_joints_position(
+            names,
+            commands,
+            duration=duration,
+            add_default_torso=False,
+        )
+        current = self._robot.get_current_joints_position(names=names)
+        for side, command, observed in zip(sides, commands, current):
+            if len(observed) != 7:
+                raise RuntimeError(f"{side} SDK current joint response must contain 7 joints")
+            maximum_error = max(
+                abs(float(actual) - target)
+                for actual, target in zip(observed, command)
+            )
+            if maximum_error > tolerance:
+                raise RuntimeError(
+                    f"{side} init recovery did not settle: max joint error "
+                    f"{maximum_error:.4f} rad exceeds {tolerance:.4f} rad"
+                )
+        if result is False:
+            raise RuntimeError("Astribot move_joints_position reported failure")
+        return {side: list(command) for side, command in zip(sides, commands)}
 
     def close(self) -> None:
         if self._closed:

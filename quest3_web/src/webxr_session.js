@@ -1,9 +1,15 @@
-import { serializeHand, emptyHand } from "./hand_frame_serializer.js?v=20260707-ar1";
-import { state } from "./session_state.js?v=20260707-ar1";
-import { setError, setStatus } from "./status_panel.js?v=20260707-ar1";
-import { sendJson } from "./websocket_client.js?v=20260707-ar1";
+import { serializeHand, serializeArmWrist, emptyHand, emptyArmWrist } from "./hand_frame_serializer.js?v=20260716-wrist1";
+import { state } from "./session_state.js?v=20260716-wrist1";
+import { setError, setStatus } from "./status_panel.js?v=20260716-wrist1";
+import { sendJson } from "./websocket_client.js?v=20260716-wrist1";
 
-const XR_SESSION_MODES = ["immersive-ar", "immersive-vr"];
+const requestedXrMode = new URLSearchParams(window.location.search).get("xr");
+const XR_SESSION_MODES =
+  requestedXrMode === "vr"
+    ? ["immersive-vr"]
+    : requestedXrMode === "ar"
+      ? ["immersive-ar"]
+      : ["immersive-ar", "immersive-vr"];
 const XR_SESSION_OPTIONS = {
   requiredFeatures: ["hand-tracking"],
   optionalFeatures: ["local", "local-floor"],
@@ -99,8 +105,13 @@ function onFrame(time, frame) {
       return;
     }
     renderXrBackdrop(session);
-    const left = serializeHand(sourceForHand(session, "left"), frame, state.referenceSpace);
-    const right = serializeHand(sourceForHand(session, "right"), frame, state.referenceSpace);
+    const leftSource = sourceForHand(session, "left");
+    const rightSource = sourceForHand(session, "right");
+    const left = serializeHand(leftSource, frame, state.referenceSpace);
+    const right = serializeHand(rightSource, frame, state.referenceSpace);
+    const leftArmWrist = serializeArmWrist(leftSource, frame, state.referenceSpace);
+    const rightArmWrist = serializeArmWrist(rightSource, frame, state.referenceSpace);
+    setStatus("reference", `${state.referenceSpaceType} rev=${state.referenceSpaceRevision}`);
     setStatus("left", left.valid ? "valid" : "invalid");
     setStatus("right", right.valid ? "valid" : "invalid");
     const transform = viewerPose.transform;
@@ -116,6 +127,7 @@ function onFrame(time, frame) {
         orientation_xyzw: [transform.orientation.x, transform.orientation.y, transform.orientation.z, transform.orientation.w],
       },
       hands: { left, right },
+      arm_wrists: { left: leftArmWrist, right: rightArmWrist },
       session: {
         active: true,
         visibility: document.visibilityState,
@@ -131,6 +143,8 @@ function onFrame(time, frame) {
         reference_space: state.referenceSpaceType,
         left_valid: left.valid,
         right_valid: right.valid,
+        left_arm_wrist_valid: leftArmWrist.valid,
+        right_arm_wrist_valid: rightArmWrist.valid,
         input_sources: inputSources,
       });
     }
@@ -157,6 +171,7 @@ function sendInactiveTrackingFrame() {
     xr_session_id: state.xrSessionId,
     hmd: { valid: false, position: [0, 0, 0], orientation_xyzw: [0, 0, 0, 1] },
     hands: { left: emptyHand(), right: emptyHand() },
+    arm_wrists: { left: emptyArmWrist(), right: emptyArmWrist() },
     session: {
       active: false,
       visibility: document.visibilityState,
@@ -246,12 +261,14 @@ export async function enterXr() {
     state.referenceSpace = await requestReferenceSpace(session);
     state.referenceSpace.addEventListener("reset", () => {
       state.referenceSpaceRevision += 1;
+      setStatus("reference", `${state.referenceSpaceType} rev=${state.referenceSpaceRevision}`);
       sendDebug("reference_space_reset", {
         reference_space: state.referenceSpaceType,
         reference_space_revision: state.referenceSpaceRevision,
       });
     });
-    setStatus("xr", "running");
+    setStatus("reference", `${state.referenceSpaceType} rev=${state.referenceSpaceRevision}`);
+    setStatus("xr", `running ${state.xrSessionMode}`);
     session.addEventListener("end", () => {
       sendDebug("session_end");
       sendInactiveTrackingFrame();

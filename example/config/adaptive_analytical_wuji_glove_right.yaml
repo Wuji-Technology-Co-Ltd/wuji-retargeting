@@ -23,11 +23,11 @@ retarget:
   lp_alpha: 0.2
 
   segment_scaling:
-    thumb:  [1.0, 1.0, 1.0]
-    index:  [1.0, 1.0, 1.0]
-    middle: [1.0, 1.0, 1.0]
-    ring:   [1.0, 1.0, 1.0]
-    pinky:  [1.05, 1.05, 1.1]
+    thumb:  [1.05, 1.05, 1.05]
+    index:  [1.1, 1.1, 1.1]
+    middle: [1.1, 1.1, 1.1]
+    ring:   [1.1, 1.1, 1.1]
+    pinky:  [1.2, 1.2, 1.2]
 
   # segment_scaling:
   #   thumb:  [0.99, 0.935, 0.935]
@@ -49,11 +49,26 @@ retarget:
     ring:   { d1: 2.0, d2: 4.0 }
     pinky:  { d1: 2.0, d2: 4.0 }
   mediapipe_rotation:
-    x: -5.0
-    y: -5.0
-    z: -20.0
-  wrist_offset_cm: [0.0, 0.0, 0.0]   # disabled: SDK uses per-SN calibrated URDF, no extra bias needed
-  thumb_offset_cm: [0.0, 0.0, 0.0]   # disabled: same reason
+    x: 0.0
+    y: 0.0
+    z: 0.0
+# from gzt
+  # wrist_offset_cm: [-0.65, 0.93, 1.46]   # calibrated: four-finger kp[5:] bias
+  # thumb_offset_cm: [0.85, -0.20, 2.91]  # calibrated: thumb kp[1:5] bias
+
+# from zjy
+#   wrist_offset_cm: [-0.65, 0.58, 1.37]
+#   thumb_offset_cm: [0.83, -1.75, -0.28]
+# # from hfy
+  # wrist_offset_cm: [-0.65, 0.22, 1.46]
+  # thumb_offset_cm: [0.85, -1.37, 2.69]
+# from lyh
+  # wrist_offset_cm: [-0.65, 0.58, 1.37]
+  # thumb_offset_cm: [0.83, -1.75, -0.28]
+
+# from czr
+  wrist_offset_cm: [-0.65, 0.22, 1.46]
+  thumb_offset_cm: [0.85, -1.37, 2.69]
 
 wuji_glove:
   device_name: "glove"

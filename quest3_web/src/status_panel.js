@@ -1,6 +1,7 @@
 const ids = {
   ws: "wsStatus",
   xr: "xrStatus",
+  reference: "referenceSpaceStatus",
   left: "leftStatus",
   right: "rightStatus",
   fps: "fpsStatus",

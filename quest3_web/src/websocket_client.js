@@ -1,5 +1,5 @@
-import { state } from "./session_state.js?v=20260707-ar1";
-import { setError, setStatus } from "./status_panel.js?v=20260707-ar1";
+import { state } from "./session_state.js?v=20260716-wrist1";
+import { setError, setStatus } from "./status_panel.js?v=20260716-wrist1";
 
 export function connectWebSocket() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";

@@ -43,6 +43,8 @@ class ArmSafetyFilter:
         maximum_dt_sec: float = 0.050,
         position_alpha: float = 1.0,
         orientation_alpha: float = 1.0,
+        position_lead_sec: float = 0.0,
+        max_position_lead_m: float = 0.0,
         max_position_delta: float | None = None,
     ):
         self.xyz_min = np.asarray(xyz_min if xyz_min is not None else [-2.0, -2.0, -2.0], dtype=float)
@@ -57,6 +59,8 @@ class ArmSafetyFilter:
         self.maximum_dt_sec = float(maximum_dt_sec)
         self.position_alpha = float(position_alpha)
         self.orientation_alpha = float(orientation_alpha)
+        self.position_lead_sec = float(position_lead_sec)
+        self.max_position_lead_m = float(max_position_lead_m)
         self._compatibility_step = None if max_position_delta is None else float(max_position_delta)
         if not (0.0 < self.minimum_dt_sec <= self.maximum_dt_sec):
             raise ValueError("dt bounds must be positive and ordered")
@@ -64,6 +68,10 @@ class ArmSafetyFilter:
             raise ValueError("speed limits must be positive")
         if not (0.0 < self.position_alpha <= 1.0 and 0.0 < self.orientation_alpha <= 1.0):
             raise ValueError("filter alpha values must be in (0, 1]")
+        if self.position_lead_sec < 0.0 or self.max_position_lead_m < 0.0:
+            raise ValueError("position lead limits must be non-negative")
+        if self.position_lead_sec > 0.0 and self.max_position_lead_m <= 0.0:
+            raise ValueError("positive position lead requires a positive distance limit")
         self._last_raw: ArmTarget | None = None
         self._last_filtered: ArmTarget | None = None
         self._last_target: ArmTarget | None = None
@@ -95,9 +103,10 @@ class ArmSafetyFilter:
             raw = self._copy_target(target)
         except (TypeError, ValueError):
             return self._hold(ArmSafetyState.FAULT, "invalid target")
-        if self._last_raw is not None:
-            position_jump = float(np.linalg.norm(raw.position_array() - self._last_raw.position_array()))
-            rotation_jump = quat_angle_xyzw(raw.orientation_array(), self._last_raw.orientation_array())
+        previous_raw = self._last_raw
+        if previous_raw is not None:
+            position_jump = float(np.linalg.norm(raw.position_array() - previous_raw.position_array()))
+            rotation_jump = quat_angle_xyzw(raw.orientation_array(), previous_raw.orientation_array())
             if position_jump > self.max_input_position_jump_m:
                 return self._hold(ArmSafetyState.HOLD, f"input position jump {position_jump:.6f} m")
             if rotation_jump > self.max_input_rotation_jump_rad:
@@ -115,8 +124,16 @@ class ArmSafetyFilter:
             dt = self._resolve_dt(dt_sec)
         except ValueError as exc:
             return self._hold(ArmSafetyState.FAULT, str(exc))
+        raw_position = raw.position_array()
+        if self.position_lead_sec > 0.0 and previous_raw is not None:
+            raw_velocity = (raw_position - previous_raw.position_array()) / dt
+            lead = raw_velocity * self.position_lead_sec
+            lead_distance = float(np.linalg.norm(lead))
+            if lead_distance > self.max_position_lead_m and lead_distance > 0.0:
+                lead *= self.max_position_lead_m / lead_distance
+            raw_position = raw_position + lead
         filtered_position = self._last_filtered.position_array() + self.position_alpha * (
-            raw.position_array() - self._last_filtered.position_array()
+            raw_position - self._last_filtered.position_array()
         )
         filtered_orientation = quat_slerp_xyzw(
             self._last_filtered.orientation_array(), raw.orientation_array(), self.orientation_alpha

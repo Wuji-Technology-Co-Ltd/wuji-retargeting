@@ -48,6 +48,7 @@ class TrackingFrame:
     client_time_sec: float
     hmd: PoseFrame
     hands: dict[str, HandFrame]
+    arm_wrists: dict[str, PoseFrame]
     session: SessionFrame
     xr_session_id: str = ""
     schema: str = SCHEMA
@@ -62,5 +63,6 @@ class TrackingFrame:
             "xr_session_id": self.xr_session_id,
             "hmd": self.hmd.to_dict(),
             "hands": {side: hand.to_dict() for side, hand in self.hands.items()},
+            "arm_wrists": {side: wrist.to_dict() for side, wrist in self.arm_wrists.items()},
             "session": self.session.to_dict(),
         }

@@ -9,19 +9,24 @@ from uuid import uuid4
 
 
 COMMAND_NAMES = {
-    "absolute-calibrate",
     "invalidate-calibration",
     "calibration-status",
     "cancel-calibration",
-    "start",
     "pause",
     "stop",
     "estop",
     "reset",
-    "recenter",
     "engage",
-    "calibrate",
+    "clutch-resume",
+    "recover-init",
     "status",
+}
+
+COMMAND_ALIASES = {
+    "e": "engage",
+    "p": "pause",
+    "r": "recover-init",
+    "s": "status",
 }
 
 
@@ -30,6 +35,7 @@ def parse_control_command(text: str) -> tuple[str, str | None]:
     if not parts:
         raise ValueError("control command cannot be empty")
     name = parts[0].replace("_", "-")
+    name = COMMAND_ALIASES.get(name, name)
     argument = parts[1] if len(parts) == 2 else None
     if name in {"mode", "mapping-mode"}:
         if argument not in {"relative", "absolute"}:
@@ -67,6 +73,7 @@ class ControlCommandQueue:
         normalized = str(name).strip().lower().replace("_", "-")
         if not normalized:
             raise ValueError("command name cannot be empty")
+        normalized = COMMAND_ALIASES.get(normalized, normalized)
         command = ControlCommand(normalized, None if argument is None else str(argument).strip())
         with self._lock:
             self._events[command.command_id] = Event()

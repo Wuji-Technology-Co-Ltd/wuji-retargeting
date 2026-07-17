@@ -33,6 +33,7 @@ def write_waiver(tmp_path, report_content=b"report"):
             "arm": "both",
             "authorized_arm_modes": ["left", "both"],
             "mapping_mode": "relative",
+            "authorized_mapping_modes": ["relative", "absolute"],
             "enable_orientation": False,
             "use_wbc": False,
             "add_default_torso": False,
@@ -68,10 +69,32 @@ def write_waiver(tmp_path, report_content=b"report"):
             "maximum_timeout_sec": 10.0,
             "minimum_stable_frames": 3,
             "recovery_strategy": "relative_reanchor_all_enabled_arms",
+            "recovery_strategies": [
+                "relative_reanchor_all_enabled_arms",
+                "absolute_pose_catchup_all_enabled_arms",
+                "fixed_anchor_pose_catchup_all_enabled_arms",
+            ],
             "absolute_orientation_catchup_authorized": True,
             "maximum_catchup_angular_speed_rad_s": 1.0,
             "maximum_automatic_orientation_error_rad": 1.57,
             "catchup_position_policy": "hold_then_reanchor",
+        },
+        "full_absolute_authorization": {
+            "authorized": True,
+            "requires_session_calibration": True,
+            "maximum_reacquire_linear_speed_mps": 0.20,
+            "maximum_reacquire_angular_speed_rad_s": 1.0,
+            "maximum_automatic_position_error_m": 0.30,
+            "maximum_automatic_orientation_error_rad": 1.57,
+        },
+        "fixed_anchor_authorization": {
+            "authorized": True,
+            "orientation_anchor_policy": "preserve_until_explicit_recalibration",
+            "position_clutch_authorized": True,
+            "maximum_reacquire_linear_speed_mps": 0.20,
+            "maximum_reacquire_angular_speed_rad_s": 1.0,
+            "maximum_automatic_position_error_m": 0.30,
+            "maximum_automatic_orientation_error_rad": 1.57,
         },
         "attestation": {
             "operator_accepts_residual_risk": True,
@@ -102,7 +125,7 @@ def test_m8_waiver_rejects_changed_report(tmp_path):
         validate_m8_waiver(waiver, arm_config(), "left", "relative")
 
 
-@pytest.mark.parametrize("arm, mode", [("right", "relative"), ("left", "absolute")])
+@pytest.mark.parametrize("arm, mode", [("right", "relative")])
 def test_m8_waiver_rejects_scope_expansion(tmp_path, arm, mode):
     waiver, _ = write_waiver(tmp_path)
 
@@ -164,6 +187,68 @@ def test_real_cli_high_speed_requires_flag_and_third_confirmation(monkeypatch, t
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     supervisor = cli.build_supervisor(cli.parse_args(base + ["--confirm-m8-high-speed"]))
     assert supervisor.status_snapshot().max_linear_speed_mps == 1.0
+
+
+def test_real_cli_two_mps_requires_separate_authorization(monkeypatch, tmp_path):
+    waiver, _ = write_waiver(tmp_path)
+    waiver_data = yaml.safe_load(waiver.read_text(encoding="utf-8"))
+    waiver_data["authorized_scope"]["max_linear_speed_mps"] = 2.0
+    waiver_data["very_high_speed_authorization"] = {
+        "authorized": True,
+        "maximum_linear_speed_mps": 2.0,
+        "operator_confirmation_required": "M8 VERY HIGH SPEED 2.0 MPS PHYSICAL ESTOP",
+    }
+    waiver.write_text(yaml.safe_dump(waiver_data), encoding="utf-8")
+    service = {"arms": {"sdk_root": "/vendor/sdk"}}
+    monkeypatch.setattr(cli, "load_arm_config", lambda path: (service, arm_config()))
+    base = [
+        "--arm", "left", "--mapping-mode", "relative", "--enable-real-arm",
+        "--confirm-m8-real-arm", "--m8-waiver", str(waiver),
+        "--m8-max-linear-speed-mps", "2.0",
+    ]
+
+    with pytest.raises(RuntimeError, match="confirm-m8-very-high-speed"):
+        cli.build_supervisor(cli.parse_args(base))
+
+    answers = iter(
+        [
+            "M8 LEFT RELATIVE PHYSICAL ESTOP",
+            "M8 VERY HIGH SPEED 2.0 MPS PHYSICAL ESTOP",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    supervisor = cli.build_supervisor(
+        cli.parse_args(base + ["--confirm-m8-very-high-speed"])
+    )
+    assert supervisor.status_snapshot().max_linear_speed_mps == 2.0
+
+
+def test_real_cli_position_lead_is_bounded_and_waiver_authorized(monkeypatch, tmp_path):
+    waiver, _ = write_waiver(tmp_path)
+    waiver_data = yaml.safe_load(waiver.read_text(encoding="utf-8"))
+    waiver_data["position_lead_authorization"] = {
+        "authorized": True,
+        "maximum_lead_sec": 0.05,
+        "maximum_lead_distance_m": 0.05,
+        "operator_confirmation_required": "M8 POSITION LEAD PHYSICAL ESTOP",
+    }
+    waiver.write_text(yaml.safe_dump(waiver_data), encoding="utf-8")
+    service = {"arms": {"sdk_root": "/vendor/sdk"}}
+    monkeypatch.setattr(cli, "load_arm_config", lambda path: (service, arm_config()))
+    args = cli.parse_args(
+        [
+            "--arm", "left", "--mapping-mode", "relative", "--enable-real-arm",
+            "--m8-position-lead-sec", "0.02",
+            "--m8-max-position-lead-m", "0.03",
+            "--m8-waiver", str(waiver),
+            "--accept-m8-risk-bundle", "M8_ACCEPT_ALL_AUTHORIZED_RISKS",
+        ]
+    )
+
+    supervisor = cli.build_supervisor(args)
+    status = supervisor.status_snapshot()
+    assert status.position_lead_sec == 0.02
+    assert status.max_position_lead_m == 0.03
 
 
 def test_real_cli_orientation_requires_confirmation_and_applies_limits(monkeypatch, tmp_path):
@@ -329,4 +414,119 @@ def test_real_cli_orientation_rate_is_bounded_by_waiver_not_a_cli_constant(monke
     )
 
     with pytest.raises(RuntimeError, match="waiver does not authorize"):
+        cli.build_supervisor(args)
+
+
+def test_real_cli_full_absolute_is_explicit_and_waiver_bounded(monkeypatch, tmp_path):
+    waiver, _ = write_waiver(tmp_path)
+    service = {"arms": {"sdk_root": "/vendor/sdk"}}
+    monkeypatch.setattr(cli, "load_arm_config", lambda path: (service, arm_config()))
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: pytest.fail(f"bundled confirmation unexpectedly prompted: {prompt}"),
+    )
+    args = cli.parse_args(
+        [
+            "--arm", "both",
+            "--mapping-mode", "absolute",
+            "--enable-real-arm",
+            "--enable-m8-full-absolute",
+            "--allow-control-takeover",
+            "--m8-position-scale", "1.5",
+            "--m8-hand-reacquire-timeout-sec", "5.0",
+            "--enable-m8-orientation",
+            "--m8-rotation-scale", "1.0",
+            "--m8-absolute-reacquire-linear-speed-mps", "0.1",
+            "--m8-absolute-reacquire-max-position-error-m", "0.2",
+            "--m8-orientation-reacquire-speed-rad-s", "0.5",
+            "--m8-orientation-reacquire-max-error-rad", "1.57",
+            "--m8-waiver", str(waiver),
+            "--accept-m8-risk-bundle", "M8_ACCEPT_ALL_AUTHORIZED_RISKS",
+        ]
+    )
+
+    supervisor = cli.build_supervisor(args)
+    status = supervisor.status_snapshot()
+    assert status.mapping_mode == "absolute"
+    assert status.absolute_pose_reacquire is True
+    assert status.absolute_reacquire_linear_speed_mps == 0.1
+
+
+def test_real_cli_fixed_anchor_profile_is_explicit_and_waiver_bounded(monkeypatch, tmp_path):
+    waiver, _ = write_waiver(tmp_path)
+    service = {"arms": {"sdk_root": "/vendor/sdk"}}
+    monkeypatch.setattr(cli, "load_arm_config", lambda path: (service, arm_config()))
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: pytest.fail(f"bundled confirmation unexpectedly prompted: {prompt}"),
+    )
+    args = cli.parse_args(
+        [
+            "--arm", "both",
+            "--mapping-mode", "relative",
+            "--enable-real-arm",
+            "--enable-m8-fixed-anchor",
+            "--allow-control-takeover",
+            "--m8-position-scale", "1.5",
+            "--m8-hand-reacquire-timeout-sec", "5.0",
+            "--enable-m8-orientation",
+            "--m8-rotation-scale", "1.0",
+            "--m8-anchor-reacquire-linear-speed-mps", "0.1",
+            "--m8-anchor-reacquire-max-position-error-m", "0.2",
+            "--m8-orientation-reacquire-speed-rad-s", "0.5",
+            "--m8-orientation-reacquire-max-error-rad", "1.57",
+            "--m8-waiver", str(waiver),
+            "--accept-m8-risk-bundle", "M8_ACCEPT_ALL_AUTHORIZED_RISKS",
+        ]
+    )
+
+    supervisor = cli.build_supervisor(args)
+    status = supervisor.status_snapshot()
+    assert status.mapping_mode == "relative"
+    assert status.fixed_anchor_mode is True
+    assert status.hand_reacquire_stable_frames == 12
+    assert status.hand_reacquire_invalid_grace_frames == 2
+    assert status.orientation_alpha == 1.0
+    assert status.pose_reacquire_linear_accel_mps2 == 0.30
+    assert status.pose_reacquire_angular_accel_rad_s2 == 1.50
+    assert supervisor.frame_processor.fixed_anchor_pose_reacquire is True
+
+
+def test_real_cli_expands_workspace_to_two_meters_with_midline_guards(monkeypatch, tmp_path):
+    waiver, _ = write_waiver(tmp_path)
+    service = {"arms": {"sdk_root": "/vendor/sdk"}}
+    monkeypatch.setattr(cli, "load_arm_config", lambda path: (service, arm_config()))
+    args = cli.parse_args(
+        [
+            "--arm", "both",
+            "--mapping-mode", "relative",
+            "--enable-real-arm",
+            "--m8-workspace-limit-m", "2.0",
+            "--confirm-m8-expanded-workspace",
+            "--m8-waiver", str(waiver),
+            "--accept-m8-risk-bundle", "M8_ACCEPT_ALL_AUTHORIZED_RISKS",
+        ]
+    )
+
+    supervisor = cli.build_supervisor(args)
+    status = supervisor.status_snapshot()
+
+    assert status.workspace_xyz_min["left"] == (0.0, 0.0, 0.0)
+    assert status.workspace_xyz_max["left"] == (2.0, 2.0, 2.0)
+    assert status.workspace_xyz_min["right"] == (0.0, -2.0, 0.0)
+    assert status.workspace_xyz_max["right"] == (2.0, 0.0, 2.0)
+
+
+def test_real_cli_rejects_workspace_above_two_meters(monkeypatch):
+    service = {"arms": {"sdk_root": "/vendor/sdk"}}
+    monkeypatch.setattr(cli, "load_arm_config", lambda path: (service, arm_config()))
+    args = cli.parse_args(
+        [
+            "--enable-real-arm",
+            "--m8-workspace-limit-m", "2.1",
+            "--confirm-m8-expanded-workspace",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match=r"\[0.5, 2.0\]"):
         cli.build_supervisor(args)

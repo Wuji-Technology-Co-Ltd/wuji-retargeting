@@ -113,6 +113,7 @@ class ArmControlLoop:
         self._thread: Thread | None = None
         self._owner_thread_id: int | None = None
         self._pause_latched = False
+        self._deadline_reset_requested = False
 
     @property
     def pause_latched(self) -> bool:
@@ -152,6 +153,12 @@ class ArmControlLoop:
         self.state = LoopState.PAUSED
         self.fault_reason = reason
 
+    def reset_timing_after_blocking_maintenance(self) -> None:
+        self._assert_owner()
+        self._last_tick_ns = None
+        self._consecutive_deadlines = 0
+        self._deadline_reset_requested = True
+
     def run(self, max_cycles: int | None = None) -> None:
         if self._owner_thread_id is not None:
             raise RuntimeError("arm control loop is already running")
@@ -168,6 +175,10 @@ class ArmControlLoop:
                 elif now - next_deadline >= self.period_ns:
                     self.stats.missed_deadlines += max(1, (now - next_deadline) // self.period_ns)
                 self.tick(now)
+                if self._deadline_reset_requested:
+                    self._deadline_reset_requested = False
+                    next_deadline = self.clock_ns() + self.period_ns
+                    continue
                 next_deadline += self.period_ns
                 if now >= next_deadline:
                     next_deadline = now + self.period_ns
@@ -346,12 +357,21 @@ class ArmFrameProcessor:
         calibrator: AbsoluteSessionCalibrator | None = None,
         hand_reacquire_timeout_sec: float = 0.0,
         hand_reacquire_stable_frames: int = 3,
+        hand_reacquire_invalid_grace_frames: int = 2,
         absolute_orientation_reacquire: bool = False,
         orientation_reacquire_speed_rad_s: float = 0.5,
         orientation_reacquire_direct_error_rad: float = 0.15,
         orientation_reacquire_complete_error_rad: float = 0.087,
         orientation_reacquire_max_error_rad: float = 1.57,
         orientation_reacquire_complete_frames: int = 5,
+        absolute_pose_reacquire: bool = False,
+        absolute_reacquire_linear_speed_mps: float = 0.10,
+        absolute_reacquire_direct_position_error_m: float = 0.02,
+        absolute_reacquire_complete_position_error_m: float = 0.01,
+        absolute_reacquire_max_position_error_m: float = 0.20,
+        fixed_anchor_pose_reacquire: bool = False,
+        pose_reacquire_linear_accel_mps2: float = 0.30,
+        pose_reacquire_angular_accel_rad_s2: float = 1.50,
     ) -> None:
         self.mapper = mapper
         self.safety_filters = dict(safety_filters)
@@ -360,16 +380,27 @@ class ArmFrameProcessor:
         self.calibrator = calibrator
         self.hand_reacquire_timeout_sec = float(hand_reacquire_timeout_sec)
         self.hand_reacquire_stable_frames = int(hand_reacquire_stable_frames)
+        self.hand_reacquire_invalid_grace_frames = int(hand_reacquire_invalid_grace_frames)
         self.absolute_orientation_reacquire = bool(absolute_orientation_reacquire)
         self.orientation_reacquire_speed_rad_s = float(orientation_reacquire_speed_rad_s)
         self.orientation_reacquire_direct_error_rad = float(orientation_reacquire_direct_error_rad)
         self.orientation_reacquire_complete_error_rad = float(orientation_reacquire_complete_error_rad)
         self.orientation_reacquire_max_error_rad = float(orientation_reacquire_max_error_rad)
         self.orientation_reacquire_complete_frames = int(orientation_reacquire_complete_frames)
+        self.absolute_pose_reacquire = bool(absolute_pose_reacquire)
+        self.absolute_reacquire_linear_speed_mps = float(absolute_reacquire_linear_speed_mps)
+        self.absolute_reacquire_direct_position_error_m = float(absolute_reacquire_direct_position_error_m)
+        self.absolute_reacquire_complete_position_error_m = float(absolute_reacquire_complete_position_error_m)
+        self.absolute_reacquire_max_position_error_m = float(absolute_reacquire_max_position_error_m)
+        self.fixed_anchor_pose_reacquire = bool(fixed_anchor_pose_reacquire)
+        self.pose_reacquire_linear_accel_mps2 = float(pose_reacquire_linear_accel_mps2)
+        self.pose_reacquire_angular_accel_rad_s2 = float(pose_reacquire_angular_accel_rad_s2)
         if not np.isfinite(self.hand_reacquire_timeout_sec) or self.hand_reacquire_timeout_sec < 0.0:
             raise ValueError("hand reacquire timeout must be finite and non-negative")
         if self.hand_reacquire_stable_frames < 1:
             raise ValueError("hand reacquire stable frames must be positive")
+        if self.hand_reacquire_invalid_grace_frames < 0:
+            raise ValueError("hand reacquire invalid grace frames must be non-negative")
         if not np.isfinite(self.orientation_reacquire_speed_rad_s) or self.orientation_reacquire_speed_rad_s <= 0.0:
             raise ValueError("orientation reacquire speed must be finite and positive")
         if not (
@@ -381,11 +412,24 @@ class ArmFrameProcessor:
             raise ValueError("orientation reacquire error thresholds must be positive and ordered through pi")
         if self.orientation_reacquire_complete_frames < 1:
             raise ValueError("orientation reacquire complete frames must be positive")
+        if not np.isfinite(self.absolute_reacquire_linear_speed_mps) or self.absolute_reacquire_linear_speed_mps <= 0.0:
+            raise ValueError("absolute reacquire linear speed must be finite and positive")
+        if not (
+            0.0 < self.absolute_reacquire_complete_position_error_m
+            <= self.absolute_reacquire_direct_position_error_m
+            <= self.absolute_reacquire_max_position_error_m
+        ):
+            raise ValueError("absolute reacquire position thresholds must be positive and ordered")
+        if not np.isfinite(self.pose_reacquire_linear_accel_mps2) or self.pose_reacquire_linear_accel_mps2 <= 0.0:
+            raise ValueError("pose reacquire linear acceleration must be finite and positive")
+        if not np.isfinite(self.pose_reacquire_angular_accel_rad_s2) or self.pose_reacquire_angular_accel_rad_s2 <= 0.0:
+            raise ValueError("pose reacquire angular acceleration must be finite and positive")
         if self.hand_reacquire_timeout_sec > 0.0 and self.adapter is None:
             raise ValueError("automatic hand reacquire requires an arm adapter")
         self._tracking_loss_started_ns: int | None = None
         self._tracking_loss_sides: tuple[str, ...] = ()
         self._tracking_reacquire_valid_frames = 0
+        self._tracking_invalid_frames = 0
         self._tracking_reacquire_timed_out = False
         self._tracking_alignment_required = False
         self._orientation_catchup_active = False
@@ -393,6 +437,15 @@ class ArmFrameProcessor:
         self._orientation_catchup_complete_frames = 0
         self._reacquire_position_errors_m: dict[str, float] = {}
         self._reacquire_orientation_errors_rad: dict[str, float] = {}
+        self._reacquire_candidate_positions_m: dict[str, list[float]] = {}
+        self._reacquire_workspace_violations: dict[str, list[str]] = {}
+        self._last_filter_rejections: dict[str, str] = {}
+        self._recovery_trigger_reason = ""
+        self._tracking_loss_events = 0
+        self._tracking_catchup_interruptions = 0
+        self._tracking_recovery_completions = 0
+        self._orientation_catchup_linear_velocities: dict[str, np.ndarray] = {}
+        self._orientation_catchup_angular_speeds: dict[str, float] = {}
         self._orientation_reference_context: tuple[str, str, int | None] | None = None
         if any(side not in {"left", "right"} or side not in self.safety_filters for side in self.enabled_sides):
             raise ValueError("enabled sides require matching left/right safety filters")
@@ -401,16 +454,30 @@ class ArmFrameProcessor:
         self._tracking_loss_started_ns = None
         self._tracking_loss_sides = ()
         self._tracking_reacquire_valid_frames = 0
+        self._tracking_invalid_frames = 0
         self._tracking_reacquire_timed_out = False
         self._tracking_alignment_required = False
         self._orientation_catchup_active = False
         self._orientation_catchup_targets.clear()
         self._orientation_catchup_complete_frames = 0
+        self._orientation_catchup_linear_velocities.clear()
+        self._orientation_catchup_angular_speeds.clear()
         self._reacquire_position_errors_m.clear()
         self._reacquire_orientation_errors_rad.clear()
+        self._reacquire_candidate_positions_m.clear()
+        self._reacquire_workspace_violations.clear()
+        self._last_filter_rejections.clear()
+        self._recovery_trigger_reason = ""
 
     def set_orientation_reference_context(self, frame: TrackingFrame) -> None:
         self._orientation_reference_context = (
+            frame.xr_session_id,
+            frame.session.reference_space,
+            frame.session.reference_space_revision,
+        )
+
+    def orientation_reference_matches(self, frame: TrackingFrame) -> bool:
+        return self._orientation_reference_context == (
             frame.xr_session_id,
             frame.session.reference_space,
             frame.session.reference_space_revision,
@@ -420,10 +487,25 @@ class ArmFrameProcessor:
         common = {
             "position_errors_m": dict(self._reacquire_position_errors_m),
             "orientation_errors_rad": dict(self._reacquire_orientation_errors_rad),
+            "candidate_positions_m": dict(self._reacquire_candidate_positions_m),
+            "workspace_violations": dict(self._reacquire_workspace_violations),
+            "filter_rejections": dict(self._last_filter_rejections),
+            "trigger_reason": self._recovery_trigger_reason,
+            "loss_events": self._tracking_loss_events,
+            "catchup_interruptions": self._tracking_catchup_interruptions,
+            "recovery_completions": self._tracking_recovery_completions,
         }
         if self._orientation_catchup_active:
             return {
-                "state": "ORIENTATION_CATCHUP",
+                "state": (
+                    "ABSOLUTE_POSE_CATCHUP"
+                    if self.mapper.mode is MappingMode.ABSOLUTE
+                    else (
+                        "FIXED_ANCHOR_CATCHUP"
+                        if self.fixed_anchor_pose_reacquire
+                        else "ORIENTATION_CATCHUP"
+                    )
+                ),
                 "sides": self.enabled_sides,
                 "remaining_sec": 0.0,
                 **common,
@@ -454,7 +536,9 @@ class ArmFrameProcessor:
         if not frame.hmd.valid:
             self.invalidate_absolute_calibration("HMD tracking invalid")
             raise PauseControl("HMD tracking invalid")
-        if self.absolute_orientation_reacquire and self._orientation_reference_context is not None:
+        if (
+            self.absolute_orientation_reacquire or self.fixed_anchor_pose_reacquire
+        ) and self._orientation_reference_context is not None:
             current_context = (
                 frame.xr_session_id,
                 frame.session.reference_space,
@@ -466,14 +550,11 @@ class ArmFrameProcessor:
         if self.calibrator is not None and self.calibrator.state in {CalibrationState.COUNTDOWN, CalibrationState.SAMPLING}:
             self._collect_calibration_sample(frame, receive_time_ns)
             raise PauseControl("absolute calibration in progress", latch=False)
-        invalid_sides = [
-            side
-            for side in self.enabled_sides
-            if not frame.hands[side].valid or not frame.hands[side].positions or "wrist" not in frame.hands[side].joint_names
-        ]
+        invalid_sides = [side for side in self.enabled_sides if not frame.arm_wrists[side].valid]
         if invalid_sides:
             self._handle_invalid_hand_tracking(invalid_sides, receive_time_ns)
-        elif self._orientation_catchup_active:
+        self._tracking_invalid_frames = 0
+        if self._orientation_catchup_active:
             return self._process_orientation_catchup(frame, dt_sec, receive_time_ns)
         elif self._tracking_loss_started_ns is not None:
             self._handle_reacquired_hand_tracking(frame, receive_time_ns)
@@ -481,14 +562,13 @@ class ArmFrameProcessor:
                 return self._process_orientation_catchup(frame, dt_sec, receive_time_ns)
         targets: dict[str, ArmTarget] = {}
         for side in self.enabled_sides:
-            hand = frame.hands[side]
-            if not hand.valid or not hand.positions or "wrist" not in hand.joint_names:
+            wrist = frame.arm_wrists[side]
+            if not wrist.valid:
                 self.safety_filters[side].filter(
                     ArmTarget([0, 0, 0], [0, 0, 0, 1]), valid=False, running=True, dt_sec=dt_sec
                 )
                 continue
-            wrist_index = hand.joint_names.index("wrist")
-            webxr_pose = ArmTarget(hand.positions[wrist_index], hand.orientations_xyzw[wrist_index])
+            webxr_pose = ArmTarget(wrist.position, wrist.orientation_xyzw)
             mapped = self.mapper.map_hand(
                 side,
                 webxr_pose,
@@ -500,25 +580,71 @@ class ArmFrameProcessor:
             command = self.safety_filters[side].filter(mapped, valid=True, running=True, dt_sec=dt_sec)
             if command.enabled:
                 targets[side] = command.target
+            elif self.fixed_anchor_pose_reacquire and command.reason.startswith("input "):
+                self._begin_discontinuity_recovery(side, command.reason, receive_time_ns)
+                raise PauseControl(
+                    f"{side} tracking discontinuity detected; starting fixed-anchor recovery: "
+                    f"{command.reason}",
+                    latch=False,
+                )
             elif self.mapper.mode is MappingMode.ABSOLUTE and command.reason.startswith("input "):
                 self.mapper.invalidate_absolute(f"{side} tracking origin discontinuity: {command.reason}")
                 raise PauseControl(f"{side} absolute calibration invalidated: {command.reason}")
         return targets or None
+
+    def _begin_discontinuity_recovery(
+        self,
+        side: str,
+        reason: str,
+        receive_time_ns: int,
+    ) -> None:
+        self._orientation_catchup_active = False
+        self._orientation_catchup_targets.clear()
+        self._orientation_catchup_complete_frames = 0
+        self._orientation_catchup_linear_velocities.clear()
+        self._orientation_catchup_angular_speeds.clear()
+        self._tracking_loss_started_ns = int(receive_time_ns)
+        self._tracking_loss_sides = (side,)
+        self._tracking_reacquire_valid_frames = 0
+        self._tracking_invalid_frames = 0
+        self._tracking_reacquire_timed_out = False
+        self._tracking_alignment_required = False
+        self._reacquire_position_errors_m.clear()
+        self._reacquire_orientation_errors_rad.clear()
+        self._reacquire_candidate_positions_m.clear()
+        self._reacquire_workspace_violations.clear()
+        self._last_filter_rejections = {side: str(reason)}
+        self._recovery_trigger_reason = f"{side}: {reason}"
+        self._tracking_loss_events += 1
 
     def _handle_invalid_hand_tracking(self, invalid_sides: list[str], receive_time_ns: int) -> None:
         if self.hand_reacquire_timeout_sec <= 0.0:
             if len(self.enabled_sides) > 1:
                 raise PauseControl("dual-arm tracking invalid: " + ", ".join(invalid_sides))
             return
-        if self.mapper.mode is not MappingMode.RELATIVE:
-            raise PauseControl("automatic hand reacquire is available only in relative mode")
+        if self.mapper.mode is MappingMode.ABSOLUTE and not self.absolute_pose_reacquire:
+            raise PauseControl("automatic absolute-pose reacquire is disabled")
+        self._tracking_invalid_frames += 1
+        if (
+            self._orientation_catchup_active
+            and self._tracking_invalid_frames <= self.hand_reacquire_invalid_grace_frames
+        ):
+            raise PauseControl(
+                "brief arm-wrist dropout during catch-up: " + ", ".join(invalid_sides),
+                latch=False,
+            )
+        if self._orientation_catchup_active:
+            self._tracking_catchup_interruptions += 1
         self._orientation_catchup_active = False
         self._orientation_catchup_targets.clear()
         self._orientation_catchup_complete_frames = 0
+        self._orientation_catchup_linear_velocities.clear()
+        self._orientation_catchup_angular_speeds.clear()
         self._tracking_alignment_required = False
         now_ns = int(receive_time_ns)
         if self._tracking_loss_started_ns is None:
             self._tracking_loss_started_ns = now_ns
+            self._tracking_loss_events += 1
         self._tracking_loss_sides = tuple(invalid_sides)
         self._tracking_reacquire_valid_frames = 0
         elapsed_sec = max(0.0, (now_ns - self._tracking_loss_started_ns) / 1e9)
@@ -553,33 +679,64 @@ class ArmFrameProcessor:
         wrists: dict[str, ArmTarget] = {}
         candidates: dict[str, ArmTarget] = {}
         for side in self.enabled_sides:
-            hand = frame.hands[side]
-            wrist_index = hand.joint_names.index("wrist")
-            wrist = ArmTarget(hand.positions[wrist_index], hand.orientations_xyzw[wrist_index])
+            arm_wrist = frame.arm_wrists[side]
+            wrist = ArmTarget(arm_wrist.position, arm_wrist.orientation_xyzw)
             wrists[side] = wrist
-            candidates[side] = self.mapper.map_hand(side, wrist)
+            candidates[side] = self._map_reacquire_candidate(frame, side, wrist)
+            self._reacquire_candidate_positions_m[side] = candidates[side].position_array().tolist()
             self._reacquire_position_errors_m[side] = float(
                 np.linalg.norm(candidates[side].position_array() - desired[side].position_array())
             )
             self._reacquire_orientation_errors_rad[side] = quat_angle_xyzw(
                 candidates[side].orientation_array(), desired[side].orientation_array()
             )
-            if self.absolute_orientation_reacquire:
+            if self.mapper.mode is MappingMode.RELATIVE and self.fixed_anchor_pose_reacquire:
+                pass
+            elif self.mapper.mode is MappingMode.RELATIVE and self.absolute_orientation_reacquire:
                 self.mapper.reanchor_position_only(side, wrist, desired[side])
-            else:
+            elif self.mapper.mode is MappingMode.RELATIVE:
                 self.mapper.recenter(side, wrist, desired[side])
             self.safety_filters[side].reset(desired[side])
-        if not self.absolute_orientation_reacquire:
+        recovery_enabled = (
+            self.mapper.mode is MappingMode.ABSOLUTE and self.absolute_pose_reacquire
+        ) or (
+            self.mapper.mode is MappingMode.RELATIVE and self.absolute_orientation_reacquire
+        ) or (
+            self.mapper.mode is MappingMode.RELATIVE and self.fixed_anchor_pose_reacquire
+        )
+        if not recovery_enabled:
             self.reset_tracking_reacquire()
             return
+        maximum_position_error = max(self._reacquire_position_errors_m.values(), default=0.0)
         maximum_error = max(self._reacquire_orientation_errors_rad.values(), default=0.0)
-        if maximum_error <= self.orientation_reacquire_direct_error_rad:
+        position_direct = (
+            (
+                self.mapper.mode is MappingMode.RELATIVE
+                and not self.fixed_anchor_pose_reacquire
+            )
+            or maximum_position_error <= self.absolute_reacquire_direct_position_error_m
+        )
+        if position_direct and maximum_error <= self.orientation_reacquire_direct_error_rad:
             self.reset_tracking_reacquire()
             return
-        if maximum_error > self.orientation_reacquire_max_error_rad:
+        self._reacquire_workspace_violations = self._workspace_violations(candidates)
+        candidate_outside_workspace = bool(self._reacquire_workspace_violations)
+        if (
+            maximum_error > self.orientation_reacquire_max_error_rad
+            or (
+                (
+                    self.mapper.mode is MappingMode.ABSOLUTE
+                    or self.fixed_anchor_pose_reacquire
+                )
+                and maximum_position_error > self.absolute_reacquire_max_position_error_m
+            )
+            or candidate_outside_workspace
+        ):
             self._tracking_alignment_required = True
             raise PauseControl(
-                f"absolute orientation recovery requires alignment; max error {maximum_error:.3f} rad",
+                "absolute pose recovery requires alignment; "
+                f"max position error {maximum_position_error:.3f} m, "
+                f"max orientation error {maximum_error:.3f} rad",
                 latch=False,
             )
         self._tracking_alignment_required = False
@@ -588,9 +745,16 @@ class ArmFrameProcessor:
             side: ArmTarget(desired[side].position_array().tolist(), desired[side].orientation_array().tolist())
             for side in self.enabled_sides
         }
+        self._orientation_catchup_linear_velocities = {
+            side: np.zeros(3, dtype=float) for side in self.enabled_sides
+        }
+        self._orientation_catchup_angular_speeds = {
+            side: 0.0 for side in self.enabled_sides
+        }
         self._orientation_catchup_complete_frames = 0
         self._tracking_loss_started_ns = None
         self._tracking_reacquire_valid_frames = 0
+        self._tracking_invalid_frames = 0
 
     def _process_orientation_catchup(
         self,
@@ -601,11 +765,20 @@ class ArmFrameProcessor:
         candidates: dict[str, ArmTarget] = {}
         wrists: dict[str, ArmTarget] = {}
         for side in self.enabled_sides:
-            hand = frame.hands[side]
-            wrist_index = hand.joint_names.index("wrist")
-            wrist = ArmTarget(hand.positions[wrist_index], hand.orientations_xyzw[wrist_index])
+            arm_wrist = frame.arm_wrists[side]
+            wrist = ArmTarget(arm_wrist.position, arm_wrist.orientation_xyzw)
             wrists[side] = wrist
-            candidates[side] = self.mapper.map_hand(side, wrist)
+            candidates[side] = self._map_reacquire_candidate(frame, side, wrist)
+            self._reacquire_candidate_positions_m[side] = candidates[side].position_array().tolist()
+        current_position_errors = {
+            side: float(
+                np.linalg.norm(
+                    self._orientation_catchup_targets[side].position_array()
+                    - candidates[side].position_array()
+                )
+            )
+            for side in self.enabled_sides
+        }
         current_errors = {
             side: quat_angle_xyzw(
                 self._orientation_catchup_targets[side].orientation_array(),
@@ -613,25 +786,84 @@ class ArmFrameProcessor:
             )
             for side in self.enabled_sides
         }
-        if max(current_errors.values(), default=0.0) > self.orientation_reacquire_max_error_rad:
+        self._reacquire_workspace_violations = self._workspace_violations(candidates)
+        candidate_outside_workspace = bool(self._reacquire_workspace_violations)
+        if (
+            max(current_errors.values(), default=0.0) > self.orientation_reacquire_max_error_rad
+            or (
+                (
+                    self.mapper.mode is MappingMode.ABSOLUTE
+                    or self.fixed_anchor_pose_reacquire
+                )
+                and max(current_position_errors.values(), default=0.0)
+                > self.absolute_reacquire_max_position_error_m
+            )
+            or candidate_outside_workspace
+        ):
             self._orientation_catchup_active = False
             self._tracking_alignment_required = True
             self._tracking_loss_started_ns = int(receive_time_ns)
             self._tracking_loss_sides = self.enabled_sides
+            self._reacquire_position_errors_m = current_position_errors
             self._reacquire_orientation_errors_rad = current_errors
-            raise PauseControl("absolute orientation recovery exceeded the automatic catch-up angle", latch=False)
+            raise PauseControl("absolute pose recovery exceeded the automatic catch-up limits", latch=False)
         targets: dict[str, ArmTarget] = {}
         updated_errors: dict[str, float] = {}
-        max_step = self.orientation_reacquire_speed_rad_s * float(dt_sec)
+        dt = float(dt_sec)
         for side in self.enabled_sides:
             current = self._orientation_catchup_targets[side]
             candidate = candidates[side]
+            position = current.position_array()
+            if self.mapper.mode is MappingMode.ABSOLUTE or self.fixed_anchor_pose_reacquire:
+                position_delta = candidate.position_array() - position
+                position_distance = float(np.linalg.norm(position_delta))
+                desired_velocity = np.zeros(3, dtype=float)
+                if position_distance > 0.0:
+                    desired_speed = min(
+                        self.absolute_reacquire_linear_speed_mps,
+                        position_distance / max(dt, 1e-9),
+                    )
+                    desired_velocity = position_delta * (desired_speed / position_distance)
+                velocity = desired_velocity
+                if self.fixed_anchor_pose_reacquire:
+                    previous_velocity = self._orientation_catchup_linear_velocities[side]
+                    velocity_delta = desired_velocity - previous_velocity
+                    max_velocity_delta = self.pose_reacquire_linear_accel_mps2 * dt
+                    velocity_delta_norm = float(np.linalg.norm(velocity_delta))
+                    if velocity_delta_norm > max_velocity_delta and velocity_delta_norm > 0.0:
+                        velocity_delta *= max_velocity_delta / velocity_delta_norm
+                    velocity = previous_velocity + velocity_delta
+                position_step = velocity * dt
+                if float(np.linalg.norm(position_step)) > position_distance and position_distance > 0.0:
+                    position_step = position_delta
+                    velocity = np.zeros(3, dtype=float)
+                position = position + position_step
+                self._orientation_catchup_linear_velocities[side] = velocity
             error = current_errors[side]
-            fraction = 1.0 if error <= max_step or error <= 0.0 else max_step / error
+            desired_angular_speed = min(
+                self.orientation_reacquire_speed_rad_s,
+                error / max(dt, 1e-9),
+            )
+            angular_speed = desired_angular_speed
+            if self.fixed_anchor_pose_reacquire:
+                previous_angular_speed = self._orientation_catchup_angular_speeds[side]
+                angular_speed_delta = self.pose_reacquire_angular_accel_rad_s2 * dt
+                angular_speed = min(
+                    desired_angular_speed,
+                    previous_angular_speed + angular_speed_delta,
+                )
+                if desired_angular_speed < previous_angular_speed:
+                    angular_speed = max(
+                        desired_angular_speed,
+                        previous_angular_speed - angular_speed_delta,
+                    )
+            self._orientation_catchup_angular_speeds[side] = angular_speed
+            max_angle_step = angular_speed * dt
+            fraction = 1.0 if error <= max_angle_step or error <= 0.0 else max_angle_step / error
             orientation = quat_slerp_xyzw(
                 current.orientation_array(), candidate.orientation_array(), fraction
             )
-            step_target = ArmTarget(current.position_array().tolist(), orientation.tolist())
+            step_target = ArmTarget(position.tolist(), orientation.tolist())
             command = self.safety_filters[side].filter(
                 step_target, valid=True, running=True, dt_sec=dt_sec
             )
@@ -642,20 +874,156 @@ class ArmFrameProcessor:
             updated_errors[side] = quat_angle_xyzw(
                 command.target.orientation_array(), candidate.orientation_array()
             )
+            current_position_errors[side] = float(
+                np.linalg.norm(command.target.position_array() - candidate.position_array())
+            )
+        self._reacquire_position_errors_m = current_position_errors
         self._reacquire_orientation_errors_rad = updated_errors
-        if all(
+        orientation_complete = all(
             error <= self.orientation_reacquire_complete_error_rad
             for error in updated_errors.values()
-        ):
+        )
+        position_complete = (
+            (
+                self.mapper.mode is MappingMode.RELATIVE
+                and not self.fixed_anchor_pose_reacquire
+            )
+            or all(
+                error <= self.absolute_reacquire_complete_position_error_m
+                for error in current_position_errors.values()
+            )
+        )
+        if orientation_complete and position_complete:
             self._orientation_catchup_complete_frames += 1
         else:
             self._orientation_catchup_complete_frames = 0
         if self._orientation_catchup_complete_frames >= self.orientation_reacquire_complete_frames:
             for side in self.enabled_sides:
-                self.mapper.reanchor_position_only(side, wrists[side], targets[side])
+                if self.mapper.mode is MappingMode.RELATIVE and not self.fixed_anchor_pose_reacquire:
+                    self.mapper.reanchor_position_only(side, wrists[side], targets[side])
                 self.safety_filters[side].reset(targets[side])
+            self._tracking_recovery_completions += 1
             self.reset_tracking_reacquire()
         return targets or None
+
+    def _workspace_violations(self, candidates: Mapping[str, ArmTarget]) -> dict[str, list[str]]:
+        axis_names = ("x", "y", "z")
+        violations: dict[str, list[str]] = {}
+        for side, candidate in candidates.items():
+            position = candidate.position_array()
+            safety_filter = self.safety_filters[side]
+            side_violations = []
+            for index, axis in enumerate(axis_names):
+                if position[index] < safety_filter.xyz_min[index]:
+                    side_violations.append(
+                        f"{axis} below min ({position[index]:.4f} < {safety_filter.xyz_min[index]:.4f})"
+                    )
+                elif position[index] > safety_filter.xyz_max[index]:
+                    side_violations.append(
+                        f"{axis} above max ({position[index]:.4f} > {safety_filter.xyz_max[index]:.4f})"
+                    )
+            if side_violations:
+                violations[side] = side_violations
+        return violations
+
+    def _map_reacquire_candidate(
+        self,
+        frame: TrackingFrame,
+        side: str,
+        wrist: ArmTarget,
+    ) -> ArmTarget:
+        if self.mapper.mode is MappingMode.ABSOLUTE:
+            return self.mapper.map_hand(
+                side,
+                wrist,
+                xr_session_id=frame.xr_session_id,
+                reference_space=frame.session.reference_space,
+                reference_space_revision=frame.session.reference_space_revision,
+                hmd_valid=frame.hmd.valid,
+            )
+        return self.mapper.map_hand(side, wrist)
+
+    def prepare_fixed_anchor_clutch_recovery(
+        self,
+        frame: TrackingFrame,
+        desired: Mapping[str, ArmTarget],
+        normal_rotation_limit_rad: float,
+    ) -> bool:
+        if not self.fixed_anchor_pose_reacquire or self.mapper.mode is not MappingMode.RELATIVE:
+            raise RuntimeError("fixed-anchor clutch recovery requires fixed-anchor relative mode")
+        self.reset_tracking_reacquire()
+        candidates: dict[str, ArmTarget] = {}
+        for side in self.enabled_sides:
+            wrist = frame.arm_wrists[side]
+            if not wrist.valid:
+                raise RuntimeError(f"{side} arm wrist tracking invalid")
+            candidates[side] = self.mapper.map_hand(
+                side,
+                ArmTarget(wrist.position, wrist.orientation_xyzw),
+            )
+            self._reacquire_candidate_positions_m[side] = candidates[side].position_array().tolist()
+            self._reacquire_position_errors_m[side] = float(
+                np.linalg.norm(candidates[side].position_array() - desired[side].position_array())
+            )
+            self._reacquire_orientation_errors_rad[side] = quat_angle_xyzw(
+                candidates[side].orientation_array(), desired[side].orientation_array()
+            )
+            self.safety_filters[side].reset(desired[side])
+
+        self._reacquire_workspace_violations = self._workspace_violations(candidates)
+        maximum_position_error = max(self._reacquire_position_errors_m.values(), default=0.0)
+        maximum_orientation_error = max(self._reacquire_orientation_errors_rad.values(), default=0.0)
+        if self._reacquire_workspace_violations:
+            self._tracking_alignment_required = True
+            self._tracking_loss_sides = tuple(self._reacquire_workspace_violations)
+            raise RuntimeError(
+                "clutch-resume candidate is outside configured workspace: "
+                + str(self._reacquire_workspace_violations)
+            )
+        if maximum_position_error > self.absolute_reacquire_max_position_error_m:
+            self._tracking_alignment_required = True
+            self._tracking_loss_sides = self.enabled_sides
+            raise RuntimeError(
+                f"clutch-resume position error {maximum_position_error:.4f} m exceeds "
+                f"recovery limit {self.absolute_reacquire_max_position_error_m:.4f} m"
+            )
+        if maximum_orientation_error > self.orientation_reacquire_max_error_rad:
+            self._tracking_alignment_required = True
+            self._tracking_loss_sides = self.enabled_sides
+            raise RuntimeError(
+                f"clutch-resume orientation error {maximum_orientation_error:.4f} rad exceeds "
+                f"recovery limit {self.orientation_reacquire_max_error_rad:.4f} rad; use engage"
+            )
+        if maximum_orientation_error <= float(normal_rotation_limit_rad):
+            self.reset_tracking_reacquire()
+            for side in self.enabled_sides:
+                self.safety_filters[side].reset(desired[side])
+            return False
+
+        self._orientation_catchup_active = True
+        self._orientation_catchup_targets = {
+            side: ArmTarget(
+                desired[side].position_array().tolist(),
+                desired[side].orientation_array().tolist(),
+            )
+            for side in self.enabled_sides
+        }
+        self._orientation_catchup_linear_velocities = {
+            side: np.zeros(3, dtype=float) for side in self.enabled_sides
+        }
+        self._orientation_catchup_angular_speeds = {
+            side: 0.0 for side in self.enabled_sides
+        }
+        self._orientation_catchup_complete_frames = 0
+        self._tracking_loss_sides = tuple(
+            side
+            for side, error in self._reacquire_orientation_errors_rad.items()
+            if error > float(normal_rotation_limit_rad)
+        )
+        self._recovery_trigger_reason = (
+            f"clutch-resume orientation catch-up from {maximum_orientation_error:.4f} rad"
+        )
+        return True
 
     def start_absolute_calibration(self, now_ns: int) -> None:
         if self.calibrator is None or self.adapter is None:
@@ -677,7 +1045,7 @@ class ArmFrameProcessor:
         if frame.session.reference_space_revision is None:
             self.calibrator.invalidate("reference_space_revision is required")
             raise PauseControl("absolute calibration requires reference_space_revision")
-        invalid_sides = [side for side in self.enabled_sides if not frame.hands[side].valid or "wrist" not in frame.hands[side].joint_names]
+        invalid_sides = [side for side in self.enabled_sides if not frame.arm_wrists[side].valid]
         if invalid_sides:
             reason = f"tracking invalid during calibration: {', '.join(invalid_sides)}"
             self.calibrator.invalidate(reason)
@@ -686,11 +1054,10 @@ class ArmFrameProcessor:
         current = self.adapter.get_current_poses(frame="chassis")
         hands = {}
         for side in self.enabled_sides:
-            hand = frame.hands[side]
-            wrist_index = hand.joint_names.index("wrist")
+            wrist = frame.arm_wrists[side]
             hands[side] = PoseSample(
-                tuple(hand.positions[wrist_index]),
-                tuple(hand.orientations_xyzw[wrist_index]),
+                tuple(wrist.position),
+                tuple(wrist.orientation_xyzw),
             )
         sample = AbsoluteCalibrationSample(
             receive_time_ns=int(receive_time_ns),
