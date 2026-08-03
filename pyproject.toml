@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wuji-retargeting"
-version = "2026.6.27"
+version = "2026.8.3"
 description = "High-precision hand pose retargeting system for WujiHand"
 readme = "README.md"
 requires-python = ">=3.10"

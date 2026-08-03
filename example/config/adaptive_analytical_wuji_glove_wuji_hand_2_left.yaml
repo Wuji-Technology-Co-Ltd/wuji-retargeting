@@ -72,7 +72,7 @@ retarget:
   mediapipe_rotation:
     x: 0.0
     y: 0.0
-    z: -75.0
+    z: -90.0
 
   wrist_offset_cm: [0.0, 0.0, 0.0]   # disabled: SDK uses per-SN calibrated URDF, no extra bias needed
   thumb_offset_cm: [0.0, 0.0, 0.0]   # disabled: same reason
