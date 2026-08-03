@@ -109,6 +109,11 @@ def _set_with_retry(desc, fn, attempts=3, backoff=0.6):
     for i in range(attempts):
         try:
             return fn()
+        except (AttributeError, TypeError):
+            # Not a transient bridge timeout — a missing accessor or a bad
+            # argument type is permanent, so surface it immediately instead of
+            # masking it as "not responding" through three doomed retries.
+            raise
         except Exception:
             if i == attempts - 1:
                 raise
@@ -143,7 +148,8 @@ class WujiHand2Backend:
     """Hardware backend for Wuji Hand 2 via wuji_sdk (networked Wuji Hand 2)."""
 
     _ENABLE_TIMEOUT_SEC = 5.0
-    _INVERTER_READY_STATE = 4
+    # status_word ext_state after a successful enable(): 0=Init 1=Ready 2=Enabled 3=Stopped
+    _READY_EXT_STATE = 2
 
     def __init__(
         self,
@@ -228,63 +234,70 @@ class WujiHand2Backend:
                 raise RuntimeError("Wuji Hand 2: 0 joints online — check device power/network")
             print(f"Wuji Hand 2 connected: {n_online}/20 joints online")
 
-            # Settle before mode change.
+            # Settle before configuring the controller.
             time.sleep(0.5)
 
             # These config SETs are retried (bounded) because the first one after a
             # multi-hand handedness probe can transiently time out while the churned
             # shared bridge settles. enable() below is intentionally NOT retried.
-            _set_with_retry("control_mode=mit", lambda: self._hand.control_mode().set("mit"))
-            # Current limit only (per-joint, amps), per the SDK's sys_current_limit
-            # resource. The separate effort_limit knob is intentionally left at the
-            # firmware default — the current limit is the governing cap.
+            # The firmware defaults to MIT control mode, so no control-mode SET is
+            # needed (there is no device-level control_mode accessor in the SDK).
+            #
+            # effort_limit is the per-joint current cap in amps (Kt=1.0 placeholder,
+            # so effort in N·m == current in A for now); a scalar broadcasts to all
+            # 20 joints.
             _set_with_retry(
-                "sys_current_limit",
-                lambda: self._hand.sys_current_limit().set(current_limit),
+                "effort_limit",
+                lambda: self._hand.effort_limit().set(current_limit),
             )
+            # A single (kp, kd) tuple broadcasts the same MIT gains to all 20 joints.
             _set_with_retry(
                 "mit_params",
-                lambda: self._hand.mit_params().set(
-                    kp=[[kp] * 4 for _ in range(5)],
-                    kd=[[kd] * 4 for _ in range(5)],
-                ),
+                lambda: self._hand.mit_params().set((kp, kd)),
             )
             self._hand.enable()
             print(f"Wuji Hand 2 init: enable() sent")
 
-            # Wait until all live joints reach inverter_state=4 (ready).
+            # Wait until all live joints reach ext_state=2 (Enabled). Diagnostics
+            # arrive as a subscription stream now; recv() is non-blocking and
+            # returns the latest frame or None. The frame carries online joints
+            # only (variable length, looked up by nid) — no None padding.
             deadline = time.monotonic() + self._ENABLE_TIMEOUT_SEC
             enabled = False
-            last_diags = []
-            while time.monotonic() < deadline:
-                time.sleep(0.2)
-                last_diags = self._hand.diagnostics().get()
-                # Filter on vbus > 0.5 (live inverter) instead of `not None`
-                # (encoder-reachable). A joint with dead inverter still reports
-                # diagnostics with vbus=0 / inverter_state=0 and would otherwise
-                # block the ready check forever.
-                live = [d for d in last_diags if d is not None and d.vbus > 0.5]
-                if live and all(
-                    d.inverter_state == self._INVERTER_READY_STATE for d in live
-                ):
-                    enabled = True
-                    break
+            last_frame = None
+            diag_sub = self._hand.joint_diagnostics().subscribe()
+            try:
+                while time.monotonic() < deadline:
+                    time.sleep(0.2)
+                    frame = diag_sub.recv()
+                    if frame is None or not frame.joints:
+                        continue
+                    last_frame = frame
+                    # Filter on vbus_v_fb > 0.5 (live inverter). A joint with a
+                    # dead inverter still reports diagnostics with vbus=0 /
+                    # ext_state=0 and would otherwise block the ready check forever.
+                    live = [e for e in frame.joints if e.vbus_v_fb > 0.5]
+                    if live and all(
+                        e.status_word.ext_state == self._READY_EXT_STATE for e in live
+                    ):
+                        enabled = True
+                        break
+            finally:
+                diag_sub.close()
             if not enabled:
                 print("Wuji Hand 2: enable timeout. Per-joint state:")
-                for i, d in enumerate(last_diags):
-                    if d is not None:
-                        fi, ji = divmod(i, 4)
-                        print(
-                            f"  finger{fi + 1}/j{ji} (idx {i}): "
-                            f"inverter_state={d.inverter_state} vbus={d.vbus:.2f}"
-                        )
+                for e in (last_frame.joints if last_frame is not None else []):
+                    print(
+                        f"  nid={e.nid}: ext_state={e.status_word.ext_state} "
+                        f"({e.status_word.ext_state_name}) vbus={e.vbus_v_fb:.2f}"
+                    )
                 self._hand.disable()
                 raise RuntimeError(f"Wuji Hand 2: enable timeout after {self._ENABLE_TIMEOUT_SEC}s")
             print(f"Wuji Hand 2 enabled (kp={kp}, kd={kd}, current_limit={current_limit}A)")
             # publisher creation is post-enable; keep it INSIDE this guard so a
             # failure here also tears the session down instead of leaking it.
-            self._publisher = self._hand.joint_command().publisher()
-            self._zeros = [0.0] * 20
+            self._publisher = self._hand.joint_command().publish()
+            self._JointCommand = self._sdk.JointCommand
         except BaseException:
             # Best-effort teardown so a failed init doesn't leak the session.
             try:
@@ -297,8 +310,9 @@ class WujiHand2Backend:
         # Send the retargeted qpos straight through — no per-joint calibration is
         # applied in the public path (see the module note above).
         positions = qpos.astype(np.float64).tolist()
-        # MIT: positions + zero velocities + zero effort feedforward
-        self._publisher.send(positions, self._zeros, self._zeros)
+        # MIT: one JointCommand per joint (AOS) — position target with zero
+        # feedforward velocity / effort.
+        self._publisher.send([self._JointCommand(p, 0.0, 0.0) for p in positions])
 
     def close(self) -> None:
         if getattr(self, "_publisher", None) is not None:
@@ -712,7 +726,7 @@ Examples:
     parser.add_argument('--kp', type=float, default=3.0, help='Wuji Hand 2 MIT kp (default: 3.0)')
     parser.add_argument('--kd', type=float, default=0.1, help='Wuji Hand 2 MIT kd (default: 0.1)')
     parser.add_argument('--current-limit', type=float, default=1.5,
-                        help='Wuji Hand 2 per-joint system current limit in amps (SDK sys_current_limit, default: 1.5)')
+                        help='Wuji Hand 2 per-joint current limit in amps (SDK effort_limit, default: 1.5)')
     # NOTE: per-joint calibration (sign/offset) is deliberately not exposed here —
     # an unvalidated sign flip / offset goes straight to the MIT controller on real
     # hardware (and can't be previewed in sim), which is unsafe as a user knob.

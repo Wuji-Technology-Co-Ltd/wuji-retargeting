@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2026.8.3]
+
+### Changed
+
+- Retuned the `mediapipe_rotation` bias in the Wuji Glove example configs (`adaptive_analytical_wuji_glove_{left,right}.yaml` and `adaptive_analytical_wuji_glove_wuji_hand_2_{left,right}.yaml`) for the new per-serial calibration. The manual `wrist_offset_cm` / `thumb_offset_cm` stay disabled because the SDK applies a per-serial calibrated URDF.
+
+### Fixed
+
+- Fixed `teleop_real.py` crashing at startup with `AttributeError` on the Wuji Hand 2 (network) backend after the Wuji SDK 2026.7.1 resource-API redesign. Control behavior is unchanged. Requires Wuji SDK ≥ 2026.7.1 and matching firmware.
+
 ## [2026.6.27]
 
 ### Changed
@@ -110,7 +120,8 @@ Initial public release.
 - Added real hardware control example
 - Added YAML-based configuration system with per-finger scaling and pinch thresholds
 
-[Unreleased]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.6.27...HEAD
+[Unreleased]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.8.3...HEAD
+[2026.8.3]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.6.27...v2026.8.3
 [2026.6.27]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.6.15...v2026.6.27
 [2026.6.15]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.6.10...v2026.6.15
 [2026.6.10]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.05.26...v2026.6.10
