@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2026.8.17]
+
+### Changed
+
+- Updated the `wuji-description` hand model submodule to `v2026.8.3` and pointed the Wuji Hand 2 example configs (`adaptive_analytical_wuji_glove_wuji_hand_2_{left,right}.yaml`) at the new `hand2/hand2_beta1/body/` asset layout. Retuned `mediapipe_rotation` for the updated model orientation (left `x = 180`, right `y = 180`, both `z = -90`). No change to IK or simulation behavior.
+
 ## [2026.8.3]
 
 ### Changed
@@ -120,7 +126,8 @@ Initial public release.
 - Added real hardware control example
 - Added YAML-based configuration system with per-finger scaling and pinch thresholds
 
-[Unreleased]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.8.3...HEAD
+[Unreleased]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.8.17...HEAD
+[2026.8.17]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.8.3...v2026.8.17
 [2026.8.3]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.6.27...v2026.8.3
 [2026.6.27]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.6.15...v2026.6.27
 [2026.6.15]: https://github.com/wuji-technology/wuji-retargeting/compare/v2026.6.10...v2026.6.15

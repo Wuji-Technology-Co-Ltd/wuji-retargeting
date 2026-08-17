@@ -11,12 +11,12 @@
 
 optimizer:
   type: "AdaptiveOptimizerAnalytical"
-  # --- Wuji Hand 2 at hand2/body/ in the wuji-description
-  # submodule (v2026.6.11+). Both IK and sim use the official assets shipped there:
-  #   IK  : urdf_path  -> official hand2/body/urdf (Pinocchio; meshes not loaded)
-  #   sim : mjcf_path  -> official hand2/body/mjcf (MuJoCo; meshes under hand2/body/meshes)
-  urdf_path: "../../wuji_retargeting/wuji-description/hand2/body/urdf/left.urdf"
-  mjcf_path: "../../wuji_retargeting/wuji-description/hand2/body/mjcf/left.xml"
+  # --- Wuji Hand 2 at hand2/hand2_beta1/body/ in the wuji-description
+  # submodule. Both IK and sim use the official assets shipped there:
+  #   IK  : urdf_path  -> official hand2/hand2_beta1/body/urdf (Pinocchio; meshes not loaded)
+  #   sim : mjcf_path  -> official hand2/hand2_beta1/body/mjcf (MuJoCo; meshes under hand2/hand2_beta1/body/meshes)
+  urdf_path: "../../wuji_retargeting/wuji-description/hand2/hand2_beta1/body/urdf/left.urdf"
+  mjcf_path: "../../wuji_retargeting/wuji-description/hand2/hand2_beta1/body/mjcf/left.xml"
   # Wuji Hand 2 uses anatomical link names (l_wrist / l_index_finger_pip ...).
   # link_naming maps the optimizer's logical roles onto them so the retargeting
   # code stays URDF-agnostic. fingers are ordered thumb..pinky.
@@ -70,7 +70,7 @@ retarget:
   # The left hand's root frame and calibration may differ from the right (often a
   # mirrored z); tune mediapipe_rotation and the offsets live in tuning_tool.
   mediapipe_rotation:
-    x: 0.0
+    x: 180.0
     y: 0.0
     z: -90.0
 
