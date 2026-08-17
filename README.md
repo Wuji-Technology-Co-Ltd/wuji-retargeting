@@ -6,7 +6,7 @@ Hand pose retargeting system for Wuji Hand. High-precision retargeting based on 
 
 https://github.com/user-attachments/assets/72116289-7a33-4a6b-83ca-fb4d9aaece0d
 
-**Get started with [Quick Start](#quick-start). For detailed documentation, please refer to [Retargeting Tutorial](https://docs.wuji.tech/en/wuji-hand/latest/retargeting) on Wuji Docs Center.**
+**Get started below. For full documentation, see the [Retargeting Docs](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/) on Wuji Docs Center.**
 
 ## Repository Structure
 
@@ -40,36 +40,11 @@ pip install -e .
 > dependencies (even with a correct `[build-system]`). Upgrade pip first:
 > `python3 -m pip install -U pip`, then run the install commands above.
 
-### Docker
-
-There is **no official Dockerfile** for wuji-retargeting. If you need to run it in
-a container, build your own image — the [Installation](#installation) steps work
-unchanged inside the container.
-
-One caveat for the live/hardware paths: the package's own kinematics URDF ships
-with the `wuji-description` submodule and is therefore already inside the image,
-but the **Wuji SDK** (`wuji_sdk` for the Wuji Glove, `wujihandpy` for the real
-hand) reads *per-device* assets from `$HOME/.wuji` on the host — for example the
-device URDF `~/.wuji/sdk/models/<serial>_hand.urdf` and parameters
-`~/.wuji/sdk/params/<serial>.toml`, which are provisioned by Wuji Studio. These
-files do not exist in a fresh container, so `wujihandpy.Hand()` and the glove
-connection will fail unless you mount that directory in:
-
-```bash
-docker run --rm -it \
-    -v ~/.wuji:/root/.wuji \
-    your-retargeting-image
-```
-
-Mount the host's `~/.wuji` to the container user's home (`/root/.wuji` when
-running as root; adjust if your image uses a different user). Real-hardware and
-glove paths additionally need device connectivity (USB passthrough or host
-networking, depending on your setup). The simulation/replay paths
-(e.g. `teleop_sim.py --play data/avp1.pkl`) do **not** require `~/.wuji`.
+Optional input extras: `pip install -e ".[video]"` for MP4 video, `".[realsense]"` for Intel RealSense, or `".[zed]"` for STEREOLABS ZED. See [Installation](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/installation/) for Docker and Apple Vision Pro setup.
 
 ### Running
 
-Wuji Glove is the recommended live input path for current development and demos.
+Wuji Glove is the recommended live input for development and demos.
 
 ```bash
 cd example
@@ -78,136 +53,24 @@ cd example
 python teleop_sim.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
 python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
 
-# Replay recording (default: adaptive analytical optimizer)
+# Replay a recording (adaptive analytical optimizer)
 python teleop_sim.py --play data/avp1.pkl --hand left
 
 # Key-vector optimizer
 python teleop_sim.py --play data/avp1.pkl --hand right --config config/vector/vector_avp.yaml
 ```
 
-### Other Input Sources
+Other input sources — video, RealSense, ZED, and Vision Pro — use the same `teleop_*.py` entry with the matching flag. For full commands, Wuji Glove preparation, Wuji Hand 2, and the tuning tool, see the docs below.
 
-In addition to the recommended Wuji Glove path, you can use MP4 video files, Intel RealSense cameras, STEREOLABS ZED cameras, Apple Vision Pro, or custom/MANUS-style external pipelines as input sources.
+## Documentation
 
-```bash
-# MP4 video input
-pip install -e ".[video]"
-mjpython teleop_sim.py --video path/to/hand_video.mp4 --hand right
+Full guides live on [Wuji Docs Center](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/):
 
-# Intel RealSense camera
-pip install -e ".[realsense]"
-mjpython teleop_sim.py --realsense --hand right
-
-# ZED camera
-pip install -e ".[zed]"
-mjpython teleop_sim.py --zed --hand right
-```
-
-Use `--show-video` to display the camera/video feed with MediaPipe landmarks overlay for input verification.
-
-### Parameter Tuning Visualization Tool
-
-An interactive tuning tool that displays **three skeleton layers** simultaneously to help you understand and adjust retargeting parameters:
-
-| Color | Layer | Description |
-|-------|-------|-------------|
-| Orange | Input | Raw MediaPipe keypoints from hand tracking |
-| Cyan | Scaled Target | Keypoints after `segment_scaling` applied |
-| White | Robot FK | Actual robot joint positions from forward kinematics |
-
-**Quick Start:**
-
-```bash
-cd example
-
-# Launch tuning viewer with recording data
-mjpython tuning_tool.py --play data/avp1.pkl --hand left
-
-# Recommended: Wuji Glove live tuning
-mjpython tuning_tool.py --wuji-glove --hand right --glove-sn <YOUR_SN>
-
-# Other live camera tuning modes
-mjpython tuning_tool.py --realsense --hand right
-mjpython tuning_tool.py --zed --hand right
-```
-
-**Workflow:**
-1. Start the viewer with a recording, video, or live input
-2. Open the retarget config YAML in your editor (e.g., `config/adaptive_analytical_avp.yaml`)
-3. Modify parameters (e.g., `segment_scaling`, `lp_alpha`, `norm_delta`)
-4. Save the file — the viewer **auto-reloads** and shows parameter changes in real-time
-5. Compare the three skeleton layers to evaluate your tuning
-
-The viewer highlights affected fingers in red when parameters change, and prints tuning guidance in the terminal.
-
-For a full parameter reference and the recommended tuning order, see the [Retargeting Parameter Tuning Guide](docs/wuji-tuning-guide.md).
-
-### Recommended: Wuji Glove Input
-
-Wuji Glove is the preferred live input device for this package. It is supported through `wuji_sdk`, publishes 21 MediaPipe-format hand keypoints, and uses the Wuji Glove example configs.
-
-Before running teleoperation, prepare and verify the glove in Wuji Studio:
-
-1. Download Wuji Studio from the [wuji-studio releases page](https://github.com/wuji-technology/wuji-studio/releases).
-2. Install the desktop application on Ubuntu:
-   ```bash
-   sudo apt install ./wuji-studio_<version>_amd64.deb
-   ```
-3. Connect the Wuji Glove and launch Wuji Studio.
-4. In the **Connect** view, search for the glove and connect it.
-5. After the connection succeeds, open **Visualization** to check the glove's live spatial motion and contact status.
-6. Before teleoperation, open **Calibration** and follow the on-screen calibration procedure. The calibration file is saved automatically after the procedure completes.
-
-```bash
-cd example
-
-# Simulation
-python teleop_sim.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
-
-# Real hardware
-python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
-
-# Optional: calibrate neutral-pose wrist/thumb offsets
-python calibrate_offset.py --hand right --glove-sn <YOUR_SN> \
-    --config config/adaptive_analytical_wuji_glove_right.yaml
-
-# Optional: tune with the interactive GUI
-mjpython tuning_tool.py --wuji-glove --hand right --glove-sn <YOUR_SN>
-```
-
-The Wuji Glove path adds per-hand configs (`adaptive_analytical_wuji_glove_left.yaml` / `adaptive_analytical_wuji_glove_right.yaml`) and supports neutral-pose offset calibration via `calibrate_offset.py`.
-
-#### Hand model: Wuji Hand (default) and Wuji Hand 2
-
-The commands above drive the **Wuji Hand** — it is the default, no extra flag needed. To drive a **Wuji Hand 2**, pass its config (`adaptive_analytical_wuji_glove_wuji_hand_2_{right,left}.yaml`). That config points the optimizer at the Wuji Hand 2 model via `optimizer.urdf_path` (IK) and `optimizer.mjcf_path` (simulation), and maps the Wuji Hand 2 anatomical link names through `optimizer.link_naming`, so no code change is needed. `teleop_real.py` infers `--hand-model wuji_hand_2` from the config automatically.
-
-```bash
-cd example
-
-# Tuning (interactive GUI)
-mjpython tuning_tool.py --wuji-glove --hand right --glove-sn <YOUR_SN> \
-    --config config/adaptive_analytical_wuji_glove_wuji_hand_2_right.yaml
-
-# Simulation
-python teleop_sim.py --input wuji_glove --hand right --glove-sn <YOUR_SN> \
-    --config config/adaptive_analytical_wuji_glove_wuji_hand_2_right.yaml
-
-# Real hardware — the Wuji Hand 2 is a networked hand (Ethernet via wuji_sdk),
-# not the USB path the Wuji Hand uses. With one hand online it is auto-discovered:
-python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN> \
-    --config config/adaptive_analytical_wuji_glove_wuji_hand_2_right.yaml
-
-# If multiple Wuji Hand 2 hands are online, choose one explicitly by address:
-python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN> \
-    --wuji-hand-2-ip <hand-ip>:50001 \
-    --config config/adaptive_analytical_wuji_glove_wuji_hand_2_right.yaml
-```
-
-Use `--hand left` with `adaptive_analytical_wuji_glove_wuji_hand_2_left.yaml` for the left hand. Wuji Hand 2 and Wuji Hand firmware must match the installed `wuji_sdk`; mismatched firmware fails fast at connect with a clear error.
-
-### Custom Input Devices
-
-Want to integrate your own hand input device? Follow the [Custom Input Device Integration Guide](docs/new-device-integration.md) — most cases require only a small wrapper class, no algorithm changes.
+- [Installation](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/installation/): Dependencies, input extras, Docker, and Apple Vision Pro setup
+- [Quick Start](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/quick-start/): Simulation, real hardware, Wuji Glove input, and Wuji Hand 2
+- [Parameter Tuning](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/tuning/): The interactive tuning tool and the recommended tuning order
+- [API Reference](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/api/): Retargeter interface and config parameters
+- [Appendix](https://docs.wuji.tech/docs/en/wuji-retargeting/latest/appendix/): Algorithm principles, troubleshooting, and custom input device integration
 
 ## Citation
 
